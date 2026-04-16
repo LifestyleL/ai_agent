@@ -6,6 +6,7 @@ import os
 import time
 import random
 from memory_core import MemoryCore
+from event.event_bus import event_bus, EventType, Event
 
 # [FIX] 修正：直接定位到 monologue.db 的实际位置
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules", "tts", "monologue.db")
@@ -20,6 +21,16 @@ class Voice:
 
         if not self.llm and not self.collaborator:
             raise ValueError("必须提供llm或collaborator参数")
+
+        # 订阅TTS请求事件
+        def handle_tts_request(event: Event):
+            text = event.data.get('text')
+            emotion = event.data.get('emotion', 'neutral')
+            if text:
+                self.speak(text, emotion)
+
+        event_bus.subscribe(EventType.TTS_REQUESTED, handle_tts_request)
+        print(f"[Voice] 已订阅TTS请求事件")
 
     def _speak_segment(self, text, emotion="neutral"):
         """
