@@ -549,124 +549,42 @@ export class LAppModel extends CubismUserModel {
     this._model.loadParameters();
 
     // ==========================================
-    // 1. 唤醒官方引擎全家桶（核心解封！）
+    // 王者归来：官方引擎全家桶全权接管身体和五官
     // ==========================================
-    // 动作管理器：播放 m01-m10 官方 Idle 动画
-    if (this._motionManager != null) this._motionManager.updateMotion(this._model, dt);
-    // 物理引擎：头发、衣服飘动
-    if (this._physics != null) this._physics.evaluate(this._model, dt);
-    // 姿态管理器：防止穿模
-    if (this._pose != null) this._pose.updateParameters(this._model, dt);
-    // 呼吸引擎：胸腔起伏
-    if (this._breath != null) this._breath.updateParameters(this._model, dt);
+    if (this._motionManager != null) this._motionManager.updateMotion(this._model, dt); // 动作轮播
+    if (this._physics != null) this._physics.evaluate(this._model, dt);                 // 物理飘动
+    if (this._pose != null) this._pose.updateParameters(this._model, dt);               // 骨骼防穿模
+    if (this._breath != null) this._breath.updateParameters(this._model, dt);           // 呼吸起伏
 
+    // ==========================================
+    // 唯一的特例：TTS 嘴型绝对控制
+    // ==========================================
     const idManager = CubismFramework.getIdManager();
-    const target = AI_WS.aiFaceParams;
-
-    // ==========================================
-    // 2. 差异化平滑系数
-    // ==========================================
-    const mouthSpeed = 20.0;
-    const eyeSpeed = 15.0;
-    const headSpeed = 8.0;
-    const bodySpeed = 4.0;
-
-    // ==========================================
-    // 3. 自发随机眨眼
-    // ==========================================
-    let blinkValue = 1.0;
-    if (this._blinkTimer > 0) {
-      this._blinkTimer -= dt;
-      const progress = 1 - this._blinkTimer / this._blinkDuration;
-      blinkValue = Math.sin(progress * Math.PI);
-    } else if (Math.random() < 0.003) {
-      this._blinkDuration = 0.2;
-      this._blinkTimer = this._blinkDuration;
-    }
-
-    // ==========================================
-    // 4. 计算后端意图的平滑值
-    // ==========================================
-    const getBackend = (key: string) => {
-      const val = (target as Record<string, any>)[key];
-      return (val !== undefined && val !== null) ? val : null;
-    };
-
-    // --- 头部 ---
-    const headTargetX = getBackend('ParamAngleX') ?? 0;
-    const headTargetY = getBackend('ParamAngleY') ?? 0;
-    const headTargetZ = getBackend('ParamAngleZ') ?? 0;
-    
-    const lerpHead = 1 - Math.exp(-headSpeed * dt);
-    this._smoothedAI.ParamAngleX += (headTargetX - this._smoothedAI.ParamAngleX) * lerpHead;
-    this._smoothedAI.ParamAngleY += (headTargetY - this._smoothedAI.ParamAngleY) * lerpHead;
-    this._smoothedAI.ParamAngleZ += (headTargetZ - this._smoothedAI.ParamAngleZ) * lerpHead;
-
-    // --- 身体 ---
-    const bodyTargetX = getBackend('ParamBodyAngleX') ?? 0;
-    const bodyTargetY = getBackend('ParamBodyAngleY') ?? 0;
-    const bodyTargetZ = getBackend('ParamBodyAngleZ') ?? 0;
-    
-    const lerpBody = 1 - Math.exp(-bodySpeed * dt);
-    this._smoothedAI.ParamBodyAngleX += (bodyTargetX - this._smoothedAI.ParamBodyAngleX) * lerpBody;
-    this._smoothedAI.ParamBodyAngleY += (bodyTargetY - this._smoothedAI.ParamBodyAngleY) * lerpBody;
-    this._smoothedAI.ParamBodyAngleZ += (bodyTargetZ - this._smoothedAI.ParamBodyAngleZ) * lerpBody;
-
-    // --- 嘴巴 ---
-    const mouthBackend = getBackend('ParamMouthOpenY');
-    const isPlayingAudio = LAppAudioManager.getInstance().getIsPlaying();
-    const finalMouthTarget = (mouthBackend !== null ? mouthBackend : (isPlayingAudio ? this._smoothedAI.ParamMouthOpenY : 0));
-    const lerpMouth = 1 - Math.exp(-mouthSpeed * dt);
-    this._smoothedAI.ParamMouthOpenY += (finalMouthTarget - this._smoothedAI.ParamMouthOpenY) * lerpMouth;
-
-    // --- 眼睛 ---
-    const eyeLBackend = getBackend('ParamEyeLOpen');
-    const eyeRBackend = getBackend('ParamEyeROpen');
-    const eyeLTarget = (eyeLBackend !== null && eyeLBackend < 0.9) ? eyeLBackend : blinkValue;
-    const eyeRTarget = (eyeRBackend !== null && eyeRBackend < 0.9) ? eyeRBackend : blinkValue;
-    const lerpEye = 1 - Math.exp(-eyeSpeed * dt);
-    this._smoothedAI.ParamEyeLOpen += (eyeLTarget - this._smoothedAI.ParamEyeLOpen) * lerpEye;
-    this._smoothedAI.ParamEyeROpen += (eyeRTarget - this._smoothedAI.ParamEyeROpen) * lerpEye;
-
-    // --- 手臂 ---
-    if (getBackend('ParamArmLA') !== null) this._smoothedAI.ParamArmLA = getBackend('ParamArmLA')!;
-    if (getBackend('ParamArmRA') !== null) this._smoothedAI.ParamArmRA = getBackend('ParamArmRA')!;
-
-    // ==========================================
-    // 5. 精准赋值（分道扬镳的终极形态）
-    // ==========================================
-    const idAngleX = idManager.getId("ParamAngleX");
-    const idAngleY = idManager.getId("ParamAngleY");
-    const idAngleZ = idManager.getId("ParamAngleZ");
-    const idBodyX = idManager.getId("ParamBodyAngleX");
-    const idBodyY = idManager.getId("ParamBodyAngleY");
-    const idBodyZ = idManager.getId("ParamBodyAngleZ");
     const idMouth = idManager.getId("ParamMouthOpenY");
-    const idEyeL = idManager.getId("ParamEyeLOpen");
-    const idEyeR = idManager.getId("ParamEyeROpen");
-    const idArmLA = idManager.getId("ParamArmLA");
-    const idArmRA = idManager.getId("ParamArmRA");
+    
+    // 获取后端传来的嘴型值
+    const target = AI_WS.aiFaceParams;
+    const mouthBackend = (target as Record<string, any>)['ParamMouthOpenY'];
+    
+    // 如果没有 TTS 数据，就闭嘴
+    const isPlayingAudio = LAppAudioManager.getInstance().getIsPlaying();
+    const mouthTarget = (mouthBackend !== undefined && mouthBackend !== null) 
+                        ? mouthBackend 
+                        : (isPlayingAudio ? this._smoothedAI.ParamMouthOpenY : 0);
+    
+    // 极速平滑（嘴巴开合必须跟紧音频）
+    const lerpMouth = 1 - Math.exp(-20.0 * dt);
+    this._smoothedAI.ParamMouthOpenY += (mouthTarget - this._smoothedAI.ParamMouthOpenY) * lerpMouth;
 
-    // 🌟 头部和身体：加法叠加！保留官方底座，叠加 AI 指令
-    if (idAngleX) this._model.addParameterValueById(idAngleX, this._smoothedAI.ParamAngleX);
-    if (idAngleY) this._model.addParameterValueById(idAngleY, this._smoothedAI.ParamAngleY);
-    if (idAngleZ) this._model.addParameterValueById(idAngleZ, this._smoothedAI.ParamAngleZ);
-    if (idBodyX) this._model.addParameterValueById(idBodyX, this._smoothedAI.ParamBodyAngleX);
-    if (idBodyY) this._model.addParameterValueById(idBodyY, this._smoothedAI.ParamBodyAngleY);
-    if (idBodyZ) this._model.addParameterValueById(idBodyZ, this._smoothedAI.ParamBodyAngleZ);
-
-    // 🌟 手臂：加法叠加（不干扰官方动画的手臂摆动）
-    if (idArmLA) this._model.addParameterValueById(idArmLA, this._smoothedAI.ParamArmLA);
-    if (idArmRA) this._model.addParameterValueById(idArmRA, this._smoothedAI.ParamArmRA);
-
-    // 🌟 嘴巴和眼睛：绝对控制（受 LipSync/EyeBlink 保护罩庇护，绝对安全）
-    if (idMouth) this._model.setParameterValueById(idMouth, this._smoothedAI.ParamMouthOpenY);
-    if (idEyeL) this._model.setParameterValueById(idEyeL, this._smoothedAI.ParamEyeLOpen);
-    if (idEyeR) this._model.setParameterValueById(idEyeR, this._smoothedAI.ParamEyeROpen);
+    // 赋予嘴巴（受 LipSync 保护罩庇护，绝对安全）
+    if (idMouth) {
+      this._model.setParameterValueById(idMouth, this._smoothedAI.ParamMouthOpenY);
+    }
 
     this._model.saveParameters();
     this._model.update();
   }
+
 
 
 
