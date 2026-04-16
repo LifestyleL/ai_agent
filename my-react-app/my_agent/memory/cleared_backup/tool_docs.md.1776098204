@@ -1,0 +1,164 @@
+# 记忆系统工具使用说明书
+
+**重要提示**：本文件包含所有记忆工具的详细描述、参数和示例。如果对某个工具的用途、参数或调用方式拿不准，请务必先查看本文件。所有工具调用都必须遵循本文件中的格式和规则。
+## load_memory
+**用途**：直接读取指定的记忆文件全文。适合已知要查哪个文件时使用。
+**参数**：
+files (列表): 要加载的文件名，如 ["user.md", "short_memories.md"]
+**示例**：
+{“tool”: “load_memory”, “params”: {“files”: [“user.md”]}}
+
+**注意**：不要一次性加载太多大文件，会浪费上下文。
+
+---
+
+## update_memory
+**用途**：将新信息写入记忆文件。如果是 `user.md`，会自动智能合并去重；如果是其他文件，则追加到末尾。
+**参数**：
+- filename (字符串): 目标文件名，如 `"user.md"` 或 `"short_memories.md"`
+- content (字符串): 要写入的具体内容
+**示例**：
+{“tool”: “update_memory”, “params”: {“filename”: “user.md”, “content”: “用户最喜欢的游戏是塞尔达”}}
+
+
+---
+
+## search_memory
+**用途**：模糊搜索。当你只知道一个关键词（如“项目”、“生日”），不知道具体在哪天、哪个文件时使用。会同时搜索短期和长期记忆。
+**参数**：
+- keyword (字符串): 搜索关键词
+- limit (整数, 可选): 最多返回几条，默认5
+**示例**：
+{“tool”: “search_memory”, “params”: {“keyword”: “Live2D进度”}}
+
+
+---
+
+## search_by_date
+**用途**：按时间范围查看长期记忆。适合用户问“我们上周聊了什么”时使用。
+**参数**：
+- start_date (字符串): 开始日期，如 `"2026-04-01"`
+- end_date (字符串): 结束日期，如 `"2026-04-10"`
+**示例**：
+{“tool”: “search_by_date”, “params”: {“start_date”: “2026-04-09”, “end_date”: “2026-04-11”}}
+
+
+---
+
+## update_long_term_memory
+**用途**：【重型工具】短期记忆写满后触发。它会自动把短期记忆总结提炼为第一人称长期记忆，并将原文件归档到 archive 文件夹，最后清空短期记忆。
+**参数**：
+- max_lines (整数, 可选): 触发总结的行数阈值，默认50
+**示例**：
+{“tool”: “update_long_term_memory”, “params”: {“max_lines”: 50}}
+
+**警告**：不要在普通对话中随意调用此工具，只有当系统提示短期记忆已满，或者明确需要整理记忆时才调用！
+
+---
+
+## write_daily_diary
+**用途**：【重型工具】根据归档文件夹里的原始聊天记录，生成极简的一天日记摘要（用于以后快速回忆哪天发生了什么）。
+**参数**：
+- target_date (字符串, 可选): 要写哪天的日记，格式 `"2026-04-11"`。不传则默认写今天的。
+**示例**：
+{“tool”: “write_daily_diary”, “params”: {“target_date”: “2026-04-10”}}
+
+**警告**：必须在 `update_long_term_memory` 之后调用，否则找不到归档文件。
+
+---
+
+## search_specific_memory
+**用途**：【溯源工具】当用户问“我那天具体怎么说的来着？”时使用。直接去废案堆（archive）里翻原始聊天记录。
+**参数**：
+- target_date (字符串, 必填): 要翻哪天的档案，如 `"2026-04-10"`
+- keyword (字符串, 可选): 要找的具体关键词。不传则返回那天档案的前面一部分。
+**示例**：
+{“tool”: “search_specific_memory”, “params”: {“target_date”: “2026-04-10”, “keyword”: “死亡”}}
+
+---
+
+## precise_search_memory
+**用途**：精确搜索关键词在指定文件中的位置。返回匹配的行和上下文，适合需要准确定位记忆条目的场景。
+
+**参数**：
+- keyword (字符串, 必填): 要搜索的关键词
+- filename (字符串, 可选): 要搜索的文件名，默认 "memories.md"
+- context_lines (整数, 可选): 返回匹配行前后的行数，默认2
+
+**示例**：
+{“tool”: “precise_search_memory”, “params”: {“keyword”: “咖啡”, “filename”: “memories.md”, “context_lines”: 2}}
+
+---
+
+## delete_memory_entry
+**用途**：删除包含关键词的整个记忆条目（## 标题块）。系统会自动备份原文件，确保安全。
+
+**参数**：
+- keyword (字符串, 必填): 要删除的条目中的关键词
+- filename (字符串, 可选): 记忆文件名，默认 "memories.md"
+- backup (布尔值, 可选): 是否先备份文件，默认 true
+
+**示例**：
+{“tool”: “delete_memory_entry”, “params”: {“keyword”: “测试数据”, “filename”: “memories.md”, “backup”: true}}
+
+**警告**：删除操作不可逆！请确认用户确实要求删除后再调用。
+
+---
+
+## locate_memory_entry
+**用途**：查找包含关键词的条目位置（块索引和行号）。不删除，仅用于定位。
+
+**参数**：
+- keyword (字符串, 必填): 要查找的关键词
+- filename (字符串, 可选): 记忆文件名，默认 "memories.md"
+
+**示例**：
+{“tool”: “locate_memory_entry”, “params”: {“keyword”: “生日”, “filename”: “memories.md”}}
+
+---
+
+## create_file
+**用途**：创建新的记忆文件或向现有文件添加内容。适合用户要求"重新创建文件"或"新建一个文件"的场景。
+
+**参数**：
+- filename (字符串, 必填): 要创建的文件名
+- content (字符串, 可选): 文件的初始内容，默认为空
+- overwrite (布尔值, 可选): 如果文件已存在，是否覆盖（默认 false，追加内容）
+
+**示例1（创建新文件）**：
+{“tool”: “create_file”, “params”: {“filename”: “new_memories.md”, “content”: “# 新记忆文件\n\n从这里开始记录...”}}
+
+**示例2（追加到现有文件）**：
+{“tool”: “create_file”, “params”: {“filename”: “memories.md”, “content”: “\n## 新增的记忆\n- 这是一条新记忆”, “overwrite”: false}}
+
+**示例3（覆盖现有文件）**：
+{“tool”: “create_file”, “params”: {“filename”: “memories.md”, “content”: “# 重新开始的记忆\n\n所有旧记忆已清除”, “overwrite”: true}}
+
+**注意**：如果文件不存在，会创建新文件；如果文件已存在且overwrite=false，会追加内容；如果overwrite=true，会覆盖整个文件。
+
+---
+
+## clear_file
+**用途**：清空文件内容（保留文件）。适合用户要求“清空文件”但不想删除文件的场景。系统会自动备份原内容到 cleared_backup 文件夹。
+
+**参数**：
+- filename (字符串, 必填): 要清空的文件名
+- backup (布尔值, 可选): 是否先备份文件内容，默认 true
+
+**示例**：
+{“tool”: “clear_file”, “params”: {“filename”: “mood_blank.md”, “backup”: true}}
+
+**注意**：清空操作会保留文件本身，只是将内容置为空。建议保持 backup=true 以确保安全。
+
+---
+
+## delete_memory_file
+**用途**：删除整个记忆文件（危险操作）。系统会自动备份到 deleted_backup 文件夹。
+
+**参数**：
+- filename (字符串, 必填): 要删除的文件名
+
+**示例**：
+{“tool”: “delete_memory_file”, “params”: {“filename”: “temp_notes.md”}}
+
+**警告**：这是最高危险级别的操作！只有在用户明确要求删除整个文件时才调用。

@@ -1,0 +1,136 @@
+import time
+import random
+import threading
+from llm_api import LLMAPI
+import config
+from live2d_manager import Live2DManager
+from modules.tts.tts_service import TTSService
+from agent_brain import react_think
+from agent_voice import Voice
+from memory_core import MemoryCore
+ 
+
+# 配置
+IDLE_TIMEOUT = 120          # 多久没说话开始独白（秒）
+IDLE_INTERVAL = (60, 65)   # 独白间隔范围（秒）
+
+class YumeDriver:
+    def __init__(self):
+        self.llm = LLMAPI(api_key=config.API_KEY, base_url=config.BASE_URL, model=config.MODEL)
+        self.live2d = Live2DManager()
+        self.voice = Voice(
+            tts=TTSService(), 
+            live2d=self.live2d, 
+            llm=self.llm
+        )
+
+        self.is_running = False
+        self.last_activity = time.time()
+        self._speak_lock = threading.Lock()  # 保证嘴巴同一时间只说一句话
+
+    # ----------------------------------------
+    # 守护线程：监听沉默，触发独白
+    # ----------------------------------------
+    def _idle_daemon(self):
+        print("🫀 [守护线程] 启动，监听用户活动...")
+        while self.is_running:
+            if time.time() - self.last_activity < IDLE_TIMEOUT:
+                time.sleep(1)
+                continue
+                
+            # 沉默超过 60 秒，尝试抢锁说话
+            if not self._speak_lock.acquire(blocking=False):
+                time.sleep(2)
+                continue
+                
+            try:
+                result = self.voice.generate_idle_thought()
+                if not result:
+                    continue
+                    
+                if result["type"] == "queue":
+                    db_data = result["data"]
+                    print(f"🎭 [高级独白] 情绪:{db_data['emotion']} | {db_data['script'][:30]}...")
+                    self.live2d.set_emotion_mode(db_data['emotion'])
+                    commands = self.voice._parse_script(db_data["script"])
+                    self.voice.execute_monologue_queue(commands, db_data["emotion"])
+                    
+                elif result["type"] == "text":
+                    text = result["data"]
+                    print(f"💭 [短句独白] {text}")
+                    self.voice.speak(text, emotion="neutral")
+                    
+            except Exception as e:
+                print(f"❌ 独白执行出错: {e}")
+            finally:
+                self._speak_lock.release()
+                
+            # 🌟🌟🌟 修复 1：播完一句后，把当前时间设为新的活跃时间！
+            # 这样下次循环时，它会老老实实再等 60 秒
+            self.last_activity = time.time()
+            
+            time.sleep(random.uniform(*IDLE_INTERVAL))
+
+
+    # ----------------------------------------
+    # 处理用户交互
+    # ----------------------------------------
+    def handle_user_input(self, text: str):
+        if not text.strip():
+            return
+            
+        # 1. 刷新时间戳 → 打断独白倒计时
+        self.last_activity = time.time()
+        
+        # 2. 抢锁 → 独白不能插嘴
+        self._speak_lock.acquire()
+        
+        try:
+            print(f"🧠 [Agent] 收到输入: {text}")
+            
+            # 🌟 3. 调用大脑思考（引入你上面的 react_think）
+            reply_dict, _ = react_think(self.llm, text)
+            
+            text_reply = reply_dict.get("text", "").strip()
+            emotion = reply_dict.get("emotion", "neutral")
+            action = reply_dict.get("action", "")
+            
+            if not text_reply:
+                print("⚠️ [Agent] 大脑返回空文本")
+                return
+                
+            print(f"💬 [Agent] 回复: {text_reply}")
+            
+            # 4. 驱动 Live2D 表情
+            if self.live2d:
+                self.live2d.set_emotion_mode(emotion)
+                
+            # 5. 如果有动作，可以打印（后续如果要联动动作库在这里加）
+            if action:
+                print(f"🎬 [动作] {action}")
+                
+            # 6. 交给 Voice 去发音并推给前端
+            self.voice.speak(text_reply, emotion=emotion)
+            
+        except Exception as e:
+            print(f"❌ 处理用户输入出错: {e}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            # 7. 必须释放锁，还给它独白权
+            self._speak_lock.release()
+
+    # ----------------------------------------
+    # 启动
+    # ----------------------------------------
+    def start(self):
+        self.is_running = True
+        self.last_activity = time.time()
+        
+        # 启动后台独白守护线程
+        threading.Thread(target=self._idle_daemon, daemon=True).start()
+        print("✅ Agent 大脑已在后台待命")
+
+
+
+
