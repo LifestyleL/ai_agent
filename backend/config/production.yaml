@@ -1,0 +1,15 @@
+# 生产环境覆盖配置
+app:
+  debug: false
+
+ai:
+  qwen:
+    temperature: 0.8
+  deepseek:
+    temperature: 0.3
+
+live2d:
+  heartbeat_interval: 0.033
+
+agent:
+  idle_timeout: 60

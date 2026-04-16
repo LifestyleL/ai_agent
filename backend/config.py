@@ -1,41 +1,98 @@
-# 统一API配置管理
+"""
+应用配置入口
+
+保持向后兼容：
+- CONFIG 字典仍然可用
+- 原有的常量（WS_PORT 等）仍然可用
+- 但现在它们都从 YAML 加载
+"""
+
 import os
-from dotenv import load_dotenv
+from utils.config_loader import init_config, get_config, get
 
-# 加载.env文件（覆盖现有环境变量）
-load_dotenv(override=True)
+# 初始化配置
+init_config()
 
-# ─── DeepSeek（工具调用模型） ───
-DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")           # DeepSeek API密钥
-DEEPSEEK_BASE_URL = os.environ.get("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
-DEEPSEEK_MODEL = os.environ.get("DEEPSEEK_MODEL", "deepseek-chat")
+# 获取完整配置
+CONFIG = get_config()
 
-# ─── 阿里千问（人设对话模型） ───
-QWEN_API_KEY = os.environ.get("QWEN_API_KEY", "")                   # 阿里千问API密钥
-QWEN_BASE_URL = os.environ.get("QWEN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL = os.environ.get("QWEN_MODEL", "qwen-max")               # 或 qwen-plus、qwen-turbo等
+# ===== 向后兼容的常量导出 =====
 
-# ─── 阿里 DashScope TTS（流式音频） ───
-DASHSCOPE_API_KEY = os.environ.get("DASHSCOPE_API_KEY", "")         # DashScope TTS API密钥
-TTS_MODEL = os.environ.get("TTS_MODEL", "qwen3-tts-vd-realtime-2026-01-15")
-TTS_VOICE = os.environ.get("TTS_VOICE", "qwen-tts-vd-live2d_girl-voice-20260413174053978-a5da")
-TTS_BASE_URL = os.environ.get("TTS_BASE_URL", "wss://dashscope.aliyuncs.com/api-ws/v1/realtime")
+# WebSocket 配置
+WS_PORT = get("websocket", "port", default=8765)
+ENABLE_JSONRPC_RESPONSE = get("websocket", "enable_jsonrpc", default=True)
 
-# ─── Agent驱动配置 ───
-AGENT_IDLE_TIMEOUT = int(os.environ.get("AGENT_IDLE_TIMEOUT", "120"))  # 多久没说话开始独白（秒）
-AGENT_IDLE_INTERVAL_MIN = int(os.environ.get("AGENT_IDLE_INTERVAL_MIN", "60"))  # 独白间隔最小值（秒）
-AGENT_IDLE_INTERVAL_MAX = int(os.environ.get("AGENT_IDLE_INTERVAL_MAX", "65"))  # 独白间隔最大值（秒）
+# AI 配置
+QWEN_API_KEY = get("ai", "qwen", "api_key", default="")
+QWEN_BASE_URL = get("ai", "qwen", "base_url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
+QWEN_MODEL = get("ai", "qwen", "model", default="qwen-max")
+DEEPSEEK_API_KEY = get("ai", "deepseek", "api_key", default="")
+DEEPSEEK_BASE_URL = get("ai", "deepseek", "base_url", default="https://api.deepseek.com/v1")
+DEEPSEEK_MODEL = get("ai", "deepseek", "model", default="deepseek-chat")
+DASHSCOPE_API_KEY = get("tts", "api_key", default="")
 
-# ─── WebSocket JSON-RPC 包装配置 ───
-ENABLE_JSONRPC_RESPONSE = True  # 正式启用多通道协议
-WS_PORT = int(os.environ.get("WS_PORT", "8765"))  # WebSocket服务端口
+# TTS 配置
+TTS_VOICE = get("tts", "voice", default="zhixiaoxia")
+TTS_SPEED = get("tts", "speed", default=1.0)
+TTS_PITCH = get("tts", "pitch", default=1.0)
+TTS_MODEL = get("tts", "model", default="qwen3-tts-vd-realtime-2026-01-15")
+TTS_BASE_URL = get("tts", "base_url", default="wss://dashscope.aliyuncs.com/api-ws/v1/realtime")
+
+# 记忆配置
+SHORT_TERM_MAX_TOKENS = get("memory", "short_term_max_tokens", default=4096)
+
+# Agent 配置
+IDLE_TIMEOUT = get("agent", "idle_timeout", default=60)
+AGENT_IDLE_TIMEOUT = IDLE_TIMEOUT
+AGENT_IDLE_INTERVAL_MIN = get("agent", "idle_interval_min", default=60)
+AGENT_IDLE_INTERVAL_MAX = get("agent", "idle_interval_max", default=65)
+MAX_CONCURRENT_TTS = get("agent", "max_concurrent_tts", default=1)
+
+# 调试模式
+DEBUG = get("app", "debug", default=True)
 
 # 兼容旧配置（逐步迁移）
 API_KEY = DEEPSEEK_API_KEY
 BASE_URL = DEEPSEEK_BASE_URL
 MODEL = DEEPSEEK_MODEL
 
-# ─── 配置验证 ───
+# 构建向后兼容的CONFIG字典（保持旧结构）
+CONFIG = {
+    "deepseek": {
+        "api_key": DEEPSEEK_API_KEY,
+        "base_url": DEEPSEEK_BASE_URL,
+        "model": DEEPSEEK_MODEL
+    },
+    "qwen": {
+        "api_key": QWEN_API_KEY,
+        "base_url": QWEN_BASE_URL,
+        "model": QWEN_MODEL
+    },
+    "tts": {
+        "api_key": DASHSCOPE_API_KEY,
+        "model": TTS_MODEL,
+        "voice": TTS_VOICE,
+        "base_url": TTS_BASE_URL
+    },
+    "agent": {
+        "idle_timeout": AGENT_IDLE_TIMEOUT,
+        "idle_interval_min": AGENT_IDLE_INTERVAL_MIN,
+        "idle_interval_max": AGENT_IDLE_INTERVAL_MAX
+    },
+    "websocket": {
+        "port": WS_PORT,
+        "enable_jsonrpc": ENABLE_JSONRPC_RESPONSE
+    }
+}
+
+# 打印配置加载状态（仅 debug 模式）
+if DEBUG:
+    print(f"[Config] 环境变量 APP_ENV={os.environ.get('APP_ENV', 'development')}")
+    print(f"[Config] WebSocket 端口: {WS_PORT}")
+    print(f"[Config] JSON-RPC 启用: {ENABLE_JSONRPC_RESPONSE}")
+    print(f"[Config] 调试模式: {DEBUG}")
+
+# ─── 配置验证（保持向后兼容） ───
 def validate_config():
     """验证必要的配置是否已设置"""
     missing_keys = []
@@ -77,36 +134,7 @@ def validate_config():
         ("DASHSCOPE_API_KEY", DASHSCOPE_API_KEY)
     ]:
         if key_value and not key_value.startswith("sk-"):
-            print(f"⚠️  警告：{key_name}格式异常，应以'sk-'开头，当前: {key_value[:8]}...")
+            print(f"[WARN] {key_name}格式异常，应以'sk-'开头，当前: {key_value[:8]}...")
 
-    print("✅ 配置验证通过")
+    print("[OK] 配置验证通过")
     return True
-
-# 创建配置字典，便于其他模块导入
-CONFIG = {
-    "deepseek": {
-        "api_key": DEEPSEEK_API_KEY,
-        "base_url": DEEPSEEK_BASE_URL,
-        "model": DEEPSEEK_MODEL
-    },
-    "qwen": {
-        "api_key": QWEN_API_KEY,
-        "base_url": QWEN_BASE_URL,
-        "model": QWEN_MODEL
-    },
-    "tts": {
-        "api_key": DASHSCOPE_API_KEY,
-        "model": TTS_MODEL,
-        "voice": TTS_VOICE,
-        "base_url": TTS_BASE_URL
-    },
-    "agent": {
-        "idle_timeout": AGENT_IDLE_TIMEOUT,
-        "idle_interval_min": AGENT_IDLE_INTERVAL_MIN,
-        "idle_interval_max": AGENT_IDLE_INTERVAL_MAX
-    },
-    "websocket": {
-        "port": WS_PORT,
-        "enable_jsonrpc": ENABLE_JSONRPC_RESPONSE
-    }
-}

@@ -1,0 +1,21 @@
+# 开发环境覆盖配置
+app:
+  debug: true
+
+websocket:
+  enable_jsonrpc: true
+
+ai:
+  qwen:
+    temperature: 0.9 # 开发时更有创意
+  deepseek:
+    temperature: 0.5
+
+tts:
+  speed: 1.0
+
+live2d:
+  heartbeat_interval: 0.033
+
+agent:
+  idle_timeout: 120 # 开发时空闲时间更长

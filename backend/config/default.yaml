@@ -1,0 +1,60 @@
+# 所有环境的默认配置基准
+app:
+  name: "Yume AI Agent"
+  version: "2.1.0"
+  debug: true
+
+websocket:
+  port: 8765
+  host: "0.0.0.0"
+  enable_jsonrpc: true
+
+ai:
+  qwen:
+    model: "qwen-plus"
+    temperature: 0.8
+    max_tokens: 2048
+  deepseek:
+    model: "deepseek-chat"
+    temperature: 0.3
+    max_tokens: 4096
+
+tts:
+  provider: "dashscope"
+  voice: "zhixiaoxia"
+  speed: 1.0
+  pitch: 1.0
+
+# 情绪映射
+emotions:
+  neutral: "neutral"
+  happy: "happy"
+  sad: "sad"
+  angry: "angry"
+  confused: "neutral"
+
+live2d:
+  # 动画参数范围
+  ranges:
+    head_x: [-30, 30]
+    head_y: [-30, 30]
+    head_z: [-30, 30]
+    body_x: [-10, 10]
+    body_y: [-10, 10]
+
+  # 平滑参数
+  smoothing:
+    factor: 0.8
+    max_delay: 0.1
+
+  # 心跳频率（秒）
+  heartbeat_interval: 0.033 # ~30fps
+
+memory:
+  short_term_max_tokens: 4096
+  long_term_summary_interval: 10 # 每10轮对话总结一次
+  auto_diary: true
+
+agent:
+  idle_timeout: 60 # 秒，空闲多久触发独白
+  max_concurrent_tts: 1 # 最大并发TTS数
