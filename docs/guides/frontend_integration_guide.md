@@ -60,6 +60,100 @@ function handleLive2DParams(params: any) {
 }
 ```
 
+## 🎬 动画架构变更（重要更新）
+
+### 去动画化重构
+后端已完成**去动画化**重构，彻底改变动画处理方式：
+
+| 重构前（旧架构） | 重构后（新架构） |
+|-----------------|-----------------|
+| 后端计算 `sin(t)` 呼吸动画 | **后端只发送目标值** |
+| 30fps 轮询持续更新 | **事件驱动**：`set_head()` 后立即发送 |
+| 后端处理平滑过渡 | **前端负责所有平滑动画** |
+| 双引擎冲突（前后端都做动画） | **单一职责**：前端唯一动画引擎 |
+
+### 对前端的影响
+
+#### 1. 参数语义变化
+现在后端发送的参数是 **"干巴巴的目标值"**，例如：
+- `{ "ParamAngleX": 15 }` 表示"头部应该转到 15 度"
+- **不再是**一个正在变化中的中间值
+
+#### 2. 前端职责
+前端必须自己实现：
+- **平滑过渡（Lerp）**：从前一个值平滑过渡到新目标值
+- **呼吸动画**：如果需要呼吸效果，前端自己计算 `sin(t)` 叠加
+- **眨眼动画**：前端自己控制眨眼频率和幅度
+- **所有时间相关的动画效果**
+
+#### 3. 消息频率
+- **之前**：30fps 恒定流，包含动画中间值
+- **现在**：事件驱动，仅当参数变化时发送
+- **心跳**：每 2 秒发送一次当前参数（仅用于保活）
+
+### 前端实现建议
+
+```typescript
+// 1. 平滑过渡示例（线性插值）
+class Live2DAnimator {
+  private currentParams: Record<string, number> = {};
+  private targetParams: Record<string, number> = {};
+  
+  update(deltaTime: number) {
+    // 对每个参数进行线性插值
+    for (const [key, targetValue] of Object.entries(this.targetParams)) {
+      const currentValue = this.currentParams[key] || targetValue;
+      const speed = 5.0; // 插值速度
+      this.currentParams[key] = lerp(currentValue, targetValue, speed * deltaTime);
+    }
+    
+    // 应用参数到 Live2D 模型
+    this.applyParams(this.currentParams);
+  }
+  
+  setTargetParams(newParams: Record<string, number>) {
+    // 后端发送的目标值直接设置为目标参数
+    this.targetParams = { ...this.targetParams, ...newParams };
+  }
+}
+
+// 2. 呼吸动画叠加示例
+function addBreathAnimation(baseParams: Record<string, number>, time: number): Record<string, number> {
+  const breath = Math.sin(time * 2) * 0.2; // 呼吸幅度
+  return {
+    ...baseParams,
+    ParamBodyAngleY: (baseParams.ParamBodyAngleY || 0) + breath,
+    ParamBodyAngleZ: (baseParams.ParamBodyAngleZ || 0) + breath * 0.5,
+  };
+}
+
+// 3. 眨眼动画示例
+class BlinkController {
+  private nextBlinkTime: number = 0;
+  
+  update(time: number, params: Record<string, number>): Record<string, number> {
+    if (time >= this.nextBlinkTime) {
+      // 执行眨眼
+      params.ParamEyeLOpen = 0.2;
+      params.ParamEyeROpen = 0.2;
+      
+      // 设置下一次眨眼时间（2-6秒后）
+      this.nextBlinkTime = time + 2 + Math.random() * 4;
+    } else if (params.ParamEyeLOpen < 1.0) {
+      // 恢复睁眼
+      params.ParamEyeLOpen = 1.0;
+      params.ParamEyeROpen = 1.0;
+    }
+    return params;
+  }
+}
+```
+
+### 兼容性说明
+- **向后兼容**：前端无需立即修改，现有代码仍能工作
+- **逐步迁移**：建议逐步实现平滑过渡，提升用户体验
+- **性能优化**：事件驱动减少了网络流量，前端动画更流畅
+
 ## 🚀 协议升级预告（未来准备）
 
 ### 何时升级？
@@ -68,6 +162,7 @@ function handleLive2DParams(params: any) {
 ### 新协议格式示例
 
 #### 1. 动画更新（Live2D参数）
+**注意**：这些参数是**目标值**，前端需要自己实现平滑过渡。
 ```json
 {
   "jsonrpc": "2.0",
@@ -77,9 +172,9 @@ function handleLive2DParams(params: any) {
     "version": "1.0",
     "timestamp": 1776320174965,
     "data": {
-      "ParamAngleX": 15,
-      "ParamAngleY": -10,
-      "ParamMouthOpenY": 0.5
+      "ParamAngleX": 15,      // 🔥 目标值：头部应该转到15度
+      "ParamAngleY": -10,     // 🔥 目标值：头部应该转到-10度
+      "ParamMouthOpenY": 0.5  // 🔥 目标值：嘴巴应该开到0.5
     }
   }
 }
@@ -163,20 +258,21 @@ function isJsonRpcError(msg: any): msg is JsonRpcError {
 
 // 通道特定数据类型
 interface AnimationData {
-  ParamAngleX?: number;
-  ParamAngleY?: number;
-  ParamAngleZ?: number;
-  ParamBodyAngleX?: number;
-  ParamBodyAngleY?: number;
-  ParamBodyAngleZ?: number;
-  ParamMouthOpenY?: number;
-  ParamEyeLOpen?: number;
-  ParamEyeROpen?: number;
-  ParamHairAhoge?: number;
-  ParamArmLA?: number;
-  ParamArmLB?: number;
-  ParamArmRA?: number;
-  ParamArmRB?: number;
+  // 🔥 所有参数都是目标值，前端负责平滑过渡
+  ParamAngleX?: number;      // 目标头部X角度 (-30~30)
+  ParamAngleY?: number;      // 目标头部Y角度 (-30~30)
+  ParamAngleZ?: number;      // 目标头部Z角度 (-30~30)
+  ParamBodyAngleX?: number;  // 目标身体X角度 (-10~10)
+  ParamBodyAngleY?: number;  // 目标身体Y角度 (-10~10)
+  ParamBodyAngleZ?: number;  // 目标身体Z角度 (-10~10)
+  ParamMouthOpenY?: number;  // 目标嘴巴开合 (0~1)
+  ParamEyeLOpen?: number;    // 目标左眼开合 (0~1, -1表示前端眨眼)
+  ParamEyeROpen?: number;    // 目标右眼开合 (0~1, -1表示前端眨眼)
+  ParamHairAhoge?: number;   // 目标头发飘动 (-3~3)
+  ParamArmLA?: number;       // 目标左臂A显示度 (0~1)
+  ParamArmLB?: number;       // 目标左臂B显示度 (0~1)
+  ParamArmRA?: number;       // 目标右臂A显示度 (0~1)
+  ParamArmRB?: number;       // 目标右臂B显示度 (0~1)
 }
 
 interface AudioData {
@@ -307,12 +403,15 @@ function handleError(error: JsonRpcError) {
 - [ ] 清理前端代码中的 Live2D 参数别名兼容逻辑
 - [ ] 确认所有 Live2D 参数使用标准名：`ParamAngleX`、`ParamMouthOpenY` 等
 - [ ] 测试系统在兼容模式下的正常运行
+- [ ] **新增**：理解动画架构变更，后端现在只发送目标值，前端负责所有平滑动画
 
 ### 第二阶段（协议升级前准备）
 - [ ] 实现 JSON-RPC 2.0 基础解析器
 - [ ] 添加 TypeScript 类型定义
 - [ ] 实现三通道消息分发逻辑
 - [ ] 实现标准错误处理
+- [ ] **新增**：实现前端平滑动画引擎（Lerp 过渡）
+- [ ] **新增**：实现呼吸、眨眼等时间相关动画（可选）
 - [ ] 与后端协调升级时间窗口
 
 ### 第三阶段（协议升级后）
@@ -337,6 +436,7 @@ function handleError(error: JsonRpcError) {
 4. 双方同步监控系统状态
 
 ---
-*文档版本：V1.0*
+*文档版本：V1.1*
 *最后更新：2026-04-16*
-*对应后端版本：第一阶段重构完成*
+*对应后端版本：第一阶段重构完成（含去动画化）*
+*主要更新：新增"动画架构变更"章节，说明后端只发送目标值*

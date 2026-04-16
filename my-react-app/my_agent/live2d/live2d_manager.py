@@ -79,50 +79,82 @@ class Live2DManager:
         self._thread = threading.Thread(target=self._sync_loop, daemon=True)
         self._thread.start()
 
+    def _send_current_params(self):
+        """发送当前参数到前端（事件驱动）"""
+        try:
+            # 获取当前目标参数（不依赖时间）
+            data = self.animator.get_current_target_params()
+            _get_ws_instance().send_queue.put(data)
+        except Exception as e:
+            print(f"[Live2DManager] 发送参数失败: {e}")
+
     def _sync_loop(self):
+        """低频心跳循环（2秒一次），仅用于保持连接"""
+        heartbeat_count = 0
         while self._running:
+            # 首先检查TTS队列
             if not self._tts_queue.empty():
                 data = self._tts_queue.get_nowait()
-            else:
-                t = time.time()
-                data = self.animator.compute_params(t)
-            _get_ws_instance().send_queue.put(data)
-            time.sleep(0.033)
+                _get_ws_instance().send_queue.put(data)
+
+            # 每2秒发送一次当前参数作为心跳（保持连接）
+            heartbeat_count += 1
+            if heartbeat_count >= 20:  # 0.1秒 * 20 = 2秒
+                self._send_current_params()
+                heartbeat_count = 0
+
+            time.sleep(0.1)  # 0.1秒检查一次
 
     def send_tts(self, audio_base64: str, visemes: list):
         self._tts_queue.put({"type": "TTS_AUDIO", "audio_base64": audio_base64, "visemes": visemes})
 
     def set_emotion_mode(self, mode: str):
-        self.animator.mode = mode
+        """情绪模式概念已移除，保留方法用于兼容性"""
+        pass  # 情绪模式概念已移除，所有动画由前端处理
 
     # 🔥 修改：加入坐标→角度映射
     def set_head(self, x=None, y=None, z=None):
         """设置头部目标值（输入摄像头归一化坐标，内部自动映射为角度）"""
         mapped = self._map_head(x, y, z)
         self.animator.set_head(**mapped)
+        # 事件驱动：立即发送当前参数
+        self._send_current_params()
 
     def set_body(self, x=None, y=None, z=None):
         """设置身体目标值（输入摄像头归一化坐标，内部自动映射为角度）"""
         mapped = self._map_body(x, y, z)
         self.animator.set_body(**mapped)
+        # 事件驱动：立即发送当前参数
+        self._send_current_params()
 
     def set_mouth(self, value=None):
         self.animator.set_mouth(value)
+        # 事件驱动：立即发送当前参数
+        self._send_current_params()
 
     def set_hair(self, value=None):
         self.animator.set_hair(value)
+        # 事件驱动：立即发送当前参数
+        self._send_current_params()
 
     def set_eyes(self, left=None, right=None):
         self.animator.set_eyes(left, right)
+        # 事件驱动：立即发送当前参数
+        self._send_current_params()
 
     def set_arms(self, arm_a=None, arm_b=None):
         self.animator.set_arms(arm_a, arm_b)
+        # 事件驱动：立即发送当前参数
+        self._send_current_params()
 
     def set_activity(self, value=None):
-        self.animator.set_activity(value)
+        """活动度概念已移除，保留方法用于兼容性"""
+        pass  # 活动度概念已移除，所有平滑动画由前端处理
 
     def reset_control(self):
         self.animator.reset_control()
+        # 事件驱动：立即发送重置后的参数
+        self._send_current_params()
 
     def send_custom_params(self, params_dict: dict):
         """
@@ -184,6 +216,9 @@ class Live2DManager:
         if body_params:
             # 身体参数已经是角度值，直接设置
             self.animator.set_body(**body_params)
+
+        # 事件驱动：发送更新后的参数
+        self._send_current_params()
 
     def stop(self):
         self._running = False
