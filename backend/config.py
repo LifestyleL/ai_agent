@@ -28,6 +28,7 @@ AGENT_IDLE_INTERVAL_MAX = int(os.environ.get("AGENT_IDLE_INTERVAL_MAX", "65"))  
 
 # ─── WebSocket JSON-RPC 包装配置 ───
 ENABLE_JSONRPC_RESPONSE = True  # 正式启用多通道协议
+WS_PORT = int(os.environ.get("WS_PORT", "8765"))  # WebSocket服务端口
 
 # 兼容旧配置（逐步迁移）
 API_KEY = DEEPSEEK_API_KEY
@@ -103,5 +104,9 @@ CONFIG = {
         "idle_timeout": AGENT_IDLE_TIMEOUT,
         "idle_interval_min": AGENT_IDLE_INTERVAL_MIN,
         "idle_interval_max": AGENT_IDLE_INTERVAL_MAX
+    },
+    "websocket": {
+        "port": WS_PORT,
+        "enable_jsonrpc": ENABLE_JSONRPC_RESPONSE
     }
 }

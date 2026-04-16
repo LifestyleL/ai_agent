@@ -37,7 +37,7 @@ class Voice:
         合成单个文本分段（不设置完成事件）
         """
         try:
-            print(f"[AUDIO] [Voice] 合成分段: '{text[:30]}...' (情绪: {emotion})")
+            print(f"[DEBUG] [Voice] 合成分段: '{text[:30]}...' (情绪: {emotion})")
 
             # [FIX] 如果 TTS 还在后台连，最多等 10 秒
             wait_count = 0

@@ -8,7 +8,7 @@ JSON-RPC 多通道通信验证脚本
 - control 通道：控制命令和其他数据
 
 验证步骤：
-1. 连接 WebSocket 服务器 (ws://localhost:8765)
+1. 连接 WebSocket 服务器 (ws://localhost:{WS_PORT})
 2. 发送测试消息
 3. 接收并分析返回的 JSON-RPC 格式消息
 4. 打印通道分离结果
@@ -19,6 +19,7 @@ import json
 import websockets
 import sys
 from datetime import datetime
+from config import WS_PORT
 
 # ANSI 颜色代码（用于醒目打印）
 class Colors:
@@ -63,7 +64,7 @@ def print_raw_message(msg_type, data):
 
 async def test_jsonrpc_channels():
     """主测试函数"""
-    uri = "ws://localhost:8765"
+    uri = f"ws://localhost:{WS_PORT}"
     timeout = 10  # 秒
 
     print(f"{Colors.BOLD}{Colors.CYAN}=== JSON-RPC 多通道通信验证开始 ==={Colors.END}")

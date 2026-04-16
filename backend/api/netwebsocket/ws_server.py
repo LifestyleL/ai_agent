@@ -8,6 +8,7 @@ from services.live2d.live2d_manager import Live2DManager
 from .message_router import create_router
 from .json_rpc_builder import JsonRpcBuilder
 from .error_code import ErrorCode
+from config import WS_PORT
 class WSServer:
     _instance = None 
     
@@ -131,7 +132,6 @@ class WSServer:
                 while self.send_queue.empty():
                     await asyncio.sleep(0.01)
                 data = self.send_queue.get_nowait()
-                print(f"[DIAG-QUEUE] 取出数据: {str(data)[:80]}")
                 if data.get("type") == "TTS_AUDIO":
                     print("[发送] [WS] 队列成功吐出 TTS 音频包，准备发给前端！")
                 else:
@@ -167,55 +167,47 @@ class WSServer:
         return "control"
 
     async def _send(self, data):
-        try:
-            print(f"[DIAG-SEND] _send 被调用，数据类型: {type(data).__name__}, 内容前100字符: {str(data)[:100]}")
-            if self.websocket:
-                try:
-                    # JSON-RPC 包装逻辑
-                    if JsonRpcBuilder.is_jsonrpc_enabled():
-                        # 推断通道
-                        channel = self._infer_channel_from_data(data)
+        if self.websocket:
+            try:
+                # JSON-RPC 包装逻辑
+                if JsonRpcBuilder.is_jsonrpc_enabled():
+                    # 推断通道
+                    channel = self._infer_channel_from_data(data)
 
-                        # 构建 JSON-RPC 响应
-                        wrapped_data = JsonRpcBuilder.wrap_data_for_channel(
-                            channel=channel,
-                            data=data,
-                            request_id=None  # 目前没有请求ID追踪
+                    # 构建 JSON-RPC 响应
+                    wrapped_data = JsonRpcBuilder.wrap_data_for_channel(
+                        channel=channel,
+                        data=data,
+                        request_id=None  # 目前没有请求ID追踪
+                    )
+
+                    json_str = json.dumps(wrapped_data)
+                    print(f"[JSON-RPC] 发送包装数据 (通道: {channel}): {json_str[:200]}...")
+                else:
+                    json_str = json.dumps(data)
+
+                await self.websocket.send(json_str)
+
+                # 调试：记录发送成功
+                if "type" not in data or data.get("type") != "TTS_AUDIO":
+                    pass
+                    #print(f"[发送成功] [WS] 已发送消息到前端，长度: {len(json_str)}")
+            except Exception as e:
+                print(f"[发送失败] [WS] 发送到前端失败: {e}")
+
+                # JSON-RPC 错误响应（如果启用）
+                if JsonRpcBuilder.is_jsonrpc_enabled():
+                    try:
+                        error_response = JsonRpcBuilder.build_error_response(
+                            code=ErrorCode.INTERNAL_ERROR,
+                            message=f"发送失败: {str(e)}",
+                            request_id=None
                         )
-
-                        json_str = json.dumps(wrapped_data)
-                        print(f"[JSON-RPC] 发送包装数据 (通道: {channel}): {json_str[:200]}...")
-                    else:
-                        json_str = json.dumps(data)
-
-                    print(f"[DIAG-WRAP] 包装后的最终消息前200字符: {json_str[:200]}")
-                    print(f"[DIAG-SEND] 准备发送，websocket 是否存在: {self.websocket is not None}")
-                    await self.websocket.send(json_str)
-
-                    # 调试：记录发送成功
-                    if "type" not in data or data.get("type") != "TTS_AUDIO":
-                        pass
-                        #print(f"[发送成功] [WS] 已发送消息到前端，长度: {len(json_str)}")
-                except Exception as e:
-                    print(f"[发送失败] [WS] 发送到前端失败: {e}")
-
-                    # JSON-RPC 错误响应（如果启用）
-                    if JsonRpcBuilder.is_jsonrpc_enabled():
-                        try:
-                            error_response = JsonRpcBuilder.build_error_response(
-                                code=ErrorCode.INTERNAL_ERROR,
-                                message=f"发送失败: {str(e)}",
-                                request_id=None
-                            )
-                            await self.websocket.send(json.dumps(error_response))
-                        except Exception as inner_e:
-                            print(f"[发送失败] [WS] 发送错误响应也失败: {inner_e}")
-        except Exception as e:
-            print(f"[DIAG-ERROR] _send 异常: {type(e).__name__}: {e}")
-            import traceback
-            traceback.print_exc()
+                        await self.websocket.send(json.dumps(error_response))
+                    except Exception as inner_e:
+                        print(f"[发送失败] [WS] 发送错误响应也失败: {inner_e}")
     #端口监听，使用端口8765
-    async def start_server(self, host="0.0.0.0", port=8765):
+    async def start_server(self, host="0.0.0.0", port=WS_PORT):
         print(f"[启动] 启动 WebSocket 服务 ws://{host}:{port}")
         return await websockets.serve(self._handle_client, host, port)
 

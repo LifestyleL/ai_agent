@@ -11,6 +11,7 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from api.netwebsocket.ws_server import WSServer
+from config import WS_PORT
 
 ws_instance = WSServer()
 
@@ -55,11 +56,11 @@ async def main():
                 print(f"[ERROR] 输入异常: {e}")
 
     print("="*50)
-    print("[3] [主线程] 准备开启 WebSocket 8765 端口...")
+    print(f"[3] [主线程] 准备开启 WebSocket {WS_PORT} 端口...")
     print("="*50)
     try:
         server = await ws_instance.start_server()
-        print("\n[OK] 系统就绪！前端连接 ws://localhost:8765 | 终端直接打字对话\n")
+        print(f"\n[OK] 系统就绪！前端连接 ws://localhost:{WS_PORT} | 终端直接打字对话\n")
     except Exception as e:
         print(f"[ERROR] WebSocket 启动失败: {e}")
         sys.exit(1)
