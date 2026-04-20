@@ -1,0 +1,29 @@
+[
+  {
+    "fragment_id": "frag_20260416_001",
+    "content": "框架重构完成，问题总算解决了",
+    "emotion_type": 0,
+    "emotion_label": "平静",
+    "importance": 8,
+    "source_date": "2026-04-16",
+    "create_time": "2026-04-18T17:14:36.271572"
+  },
+  {
+    "fragment_id": "frag_20260416_002",
+    "content": "用户重复测试通道分离，有点烦但又理解他担心出问题",
+    "emotion_type": 3,
+    "emotion_label": "烦躁",
+    "importance": 5,
+    "source_date": "2026-04-16",
+    "create_time": "2026-04-18T17:14:36.271572"
+  },
+  {
+    "fragment_id": "frag_20260416_003",
+    "content": "用户工作到很晚，看着挺累的",
+    "emotion_type": 2,
+    "emotion_label": "难过",
+    "importance": 4,
+    "source_date": "2026-04-16",
+    "create_time": "2026-04-18T17:14:36.271572"
+  }
+]

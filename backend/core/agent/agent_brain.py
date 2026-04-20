@@ -1,8 +1,8 @@
 import json
 from datetime import datetime
-from core.memory_core import MemoryCore
+from core.memory.memory_core import MemoryCore
+from config import MAX_STEPS
 
-MAX_STEPS = 8
 tool_usage_count = {}
 
 THINKING_PROMPT_TEMPLATE = """
@@ -116,7 +116,7 @@ PERSONA_PROMPT_TEMPLATE = """
 def call_tool(tool_name, params, llm):
     """执行具体的工具调用"""
     tool_usage_count[tool_name] = tool_usage_count.get(tool_name, 0) + 1
-    print(f"🔧 调用工具: {tool_name} | 参数: {params}")
+    print(f"[工具] 调用工具: {tool_name} | 参数: {params}")
 
     if tool_name == "load_memory":
         files = params.get("files", [])
@@ -224,7 +224,8 @@ def call_tool(tool_name, params, llm):
 def generate_reply(llm, user_input, context=""):
     """根据人设生成最终的结构化回复"""
     persona = MemoryCore.load_files(["personality.md"]) or "AI虚拟主播"
-    short = MemoryCore.load_files(["short_memories.md"]) or "（暂无近期记录）"
+    # [V1→V3] 已迁移至 V3 读取链路，短期记忆从 short_term.json 获取
+    short = "（暂无近期记录）"  # MemoryCore.load_files(["short_memories.md"]) or "（暂无近期记录）"
     
     # 读取刚刚的自言自语
     recent_thoughts_raw = MemoryCore.load_files(["mood_blank.md"]) or ""
@@ -277,7 +278,7 @@ def react_think(llm, user_input):
             raw_think = llm.ask(thinking_prompt).strip()
             
             # 🌟🌟🌟 加上这行，看看大模型到底吐了什么蛇皮东西
-            print(f"   🧠 [原始返回]: {raw_think[:150]}")
+            print(f"   [思考] [原始返回]: {raw_think[:150]}")
             
             action = json.loads(raw_think)
         except Exception as e:
@@ -285,27 +286,29 @@ def react_think(llm, user_input):
             print(f"   ❌ [解析失败]: {e}")
             parse_failures += 1
             if parse_failures > MAX_STEPS // 2:
-                print(f"⚠️ 解析失败过多，终止思考")
+                print(f"[警告] 解析失败过多，终止思考")
                 break
             continue
 
-        print(f"   💡 思考: {action.get('thought', '')[:70]}... | 类型: {action.get('type')}")
+        print(f"   [想法] 思考: {action.get('thought', '')[:70]}... | 类型: {action.get('type')}")
 
 
 
         if action.get("type") == "ready":
             final_reply = generate_reply(llm, user_input, context)
-            MemoryCore.append_to_file("short_memories.md",
-                f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**用户**：{user_input}\n**yume**：{final_reply.get('text', '')}")
+            # [V1→V3] 已废弃：写入已由 memory_core.add_short_term() 接管
+            # MemoryCore.append_to_file("short_memories.md",
+            #     f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**用户**：{user_input}\n**yume**：{final_reply.get('text', '')}")
             return final_reply, context
 
         elif action.get("type") == "tool":
             tool_name = action.get("tool")
             if tool_usage_count.get(tool_name, 0) >= 3:
-                print(f"⚠️ {tool_name} 调用过多，强制停止")
+                print(f"[警告] {tool_name} 调用过多，强制停止")
                 final_reply = generate_reply(llm, user_input, context)
-                MemoryCore.append_to_file("short_memories.md",
-                    f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**用户**：{user_input}\n**yume**：{final_reply.get('text', '')}")
+                # [V1→V3] 已废弃：写入已由 memory_core.add_short_term() 接管
+                # MemoryCore.append_to_file("short_memories.md",
+                #     f"\n## {datetime.now().strftime('%Y-%m-%d %H:%M')}\n**用户**：{user_input}\n**yume**：{final_reply.get('text', '')}")
                 return final_reply, context
 
             result = call_tool(tool_name, action.get("params", {}), llm)

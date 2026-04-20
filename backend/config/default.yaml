@@ -11,7 +11,7 @@ websocket:
 
 ai:
   qwen:
-    model: "qwen-plus"
+    model: "qwen-max"
     temperature: 0.8
     max_tokens: 2048
   deepseek:
@@ -34,6 +34,7 @@ emotions:
   confused: "neutral"
 
 live2d:
+  enabled: false
   # 动画参数范围
   ranges:
     head_x: [-30, 30]
@@ -54,7 +55,23 @@ memory:
   short_term_max_tokens: 4096
   long_term_summary_interval: 10 # 每10轮对话总结一次
   auto_diary: true
+  # V3.0 记忆系统增强配置
+  short_term_capacity_base: 15 # 短期记忆基础容量
+  short_term_capacity_dynamic: true # 是否启用动态容量调整
+  short_term_capacity_max: 30 # 动态调整最大容量
+  enable_vector_memory: false # 是否启用向量记忆模块（V3.0暂不启用）
+  forgetting_strategy: "importance_based" # 遗忘策略：importance_based, time_based, hybrid
+  forgetting_max_capacity: 2000 # 最大记忆碎片容量
+  forgetting_aggressiveness: 0.5 # 遗忘激进程度 0.0-1.0
+  enable_wal_logging: true # 是否启用WAL日志保证一致性
+  short_term_history_tokens: 1500 # 短期历史记录最大token预算（粗略估计）
+  # 深度记忆配置
+  deep_memory:
+    max_fragments: 2000 # 最大碎片数量
+    embedding_model: "all-MiniLM-L6-v2" # 嵌入模型
+    emotion_labels: ["平静", "开心", "难过", "烦躁"] # 情绪标签映射
 
 agent:
   idle_timeout: 60 # 秒，空闲多久触发独白
   max_concurrent_tts: 1 # 最大并发TTS数
+  max_steps: 8 # 工具调用最大步数

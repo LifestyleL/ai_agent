@@ -78,11 +78,77 @@ class LLMAPI:
             {"role": "user", "content": user_prompt}
         ]
         result = self.chat(messages, temperature=temperature)
-        
+
         if "error" in result:
             return f"出错了：{result['error']}"
-        
+
         try:
             return result["choices"][0]["message"]["content"].strip()
         except:
             return "解析回复失败"
+
+    def chat_stream(self,
+                   messages: List[Dict[str, str]],
+                   temperature: float = 0.7,
+                   functions: Optional[List[Dict]] = None
+                   ):
+        """
+        流式聊天请求，返回生成器 yield chunk content
+        """
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True  # 开启流式
+        }
+
+        if functions:
+            payload["functions"] = functions
+
+        try:
+            response = requests.post(
+                f"{self.base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30,
+                stream=True  # requests 流式接收
+            )
+            response.raise_for_status()
+
+            # 解析 Server-Sent Events (SSE)
+            for line in response.iter_lines():
+                if line:
+                    line = line.decode('utf-8')
+                    if line.startswith('data: '):
+                        data = line[6:]  # 去掉 "data: " 前缀
+                        if data == '[DONE]':
+                            break
+                        try:
+                            chunk = json.loads(data)
+                            if 'choices' in chunk and len(chunk['choices']) > 0:
+                                delta = chunk['choices'][0].get('delta', {})
+                                if 'content' in delta and delta['content']:
+                                    yield delta['content']
+                        except json.JSONDecodeError:
+                            continue
+        except requests.exceptions.Timeout:
+            print("❌ 流式 API 请求超时")
+            yield "[ERROR] 请求超时"
+        except requests.exceptions.HTTPError as e:
+            print(f"❌ 流式 HTTP 错误: {e}")
+            yield f"[ERROR] HTTP错误: {e}"
+        except Exception as e:
+            print(f"❌ 流式 API 调用失败: {e}")
+            yield f"[ERROR] {str(e)}"
+
+    def ask_stream(self, prompt: str, temperature: float = 0.7):
+        """
+        流式简易调用：直接传字符串，返回生成器 yield 文本片段
+        """
+        messages = [{"role": "user", "content": prompt}]
+        return self.chat_stream(messages, temperature=temperature)

@@ -91,7 +91,7 @@ def main():
     # 5. 检查TTS配置集成
     print("\n5. 检查TTS配置集成...")
     try:
-        from services.modules.tts.tts_config import TTSConfig
+        from services.tts.tts_config import TTSConfig
         print("   OK: TTSConfig导入成功")
 
         if TTSConfig.API_KEY == config.DASHSCOPE_API_KEY:

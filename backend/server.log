@@ -1,0 +1,84 @@
+[Config] 环境变量 APP_ENV=development
+[Config] WebSocket 端口: 8765
+[Config] JSON-RPC 启用: True
+[Config] 调试模式: True
+==================================================
+[1] [主线程] 准备拉起 Agent 后台线程...
+==================================================
+[TTS] CosyVoice 就绪 (模型: qwen3-tts-vd-realtime-2026-01-15, 音色: qwen-tts-vd-live2d_girl-voice-20260413174053978-a5da)
+[KEY] [TTS] 当前API密钥: sk-329aa...
+[KEY] [TTS] 使用API密钥: sk-329aa...
+[EventBus] 事件总线初始化完成
+[EventBus] 订阅事件: ['error_occurred', 'tts_failed', 'thinking_completed'], handler_id=4ed9c3ed-d26f-4160-a3bb-01efffd4fecb
+[EventBus] 订阅事件: ['user_input_received'], handler_id=ddd1eb5e-65bc-476f-80d6-a8d52703298a
+[EventBus] 默认事件处理器已设置
+[EventBus] 订阅事件: ['instinct_triggered'], handler_id=475b7ef0-edf2-4062-9bb3-6f737713514f
+[InstinctHandler] 本能处理器已就绪
+[EventBus] 订阅事件: ['subconscious_action'], handler_id=69117cf5-8ff3-4ddb-896e-c348acc174ab
+[EventBus] 订阅事件: ['spontaneous_action_triggered'], handler_id=fe77f7cb-335d-4a6c-948e-ceb9725b04f7
+[System] 正在冷加载记忆至内存...
+
+【MemoryCore.load_files】被调用 → 文件: ['personality.md']
+   → 尝试加载: F:\AI\ai_agent\backend\core\memory\personality.md
+   → 文件是否存在: True
+   [OK] 成功加载 personality.md，内容长度: 272 字符
+【MemoryCore.load_files】最终返回长度: 296 字符
+
+
+【MemoryCore.load_files】被调用 → 文件: ['mood_blank.md']
+   → 尝试加载: F:\AI\ai_agent\backend\core\memory\mood_blank.md
+   → 文件是否存在: True
+   [OK] 成功加载 mood_blank.md，内容长度: 481 字符
+【MemoryCore.load_files】最终返回长度: 504 字符
+
+[System] 记忆加载完毕，主链路 0 I/O。
+[LLMCollaborator] 内存上下文已注入
+[Live2D] Live2D管理器初始化完成
+[TTS] CosyVoice 就绪 (模型: qwen3-tts-vd-realtime-2026-01-15, 音色: qwen-tts-vd-live2d_girl-voice-20260413174053978-a5da)
+[KEY] [TTS] 当前API密钥: sk-329aa...
+[KEY] [TTS] 使用API密钥: sk-329aa...
+[TTS] 会话创建: sess_HyhfF9cWTtBSaNWJlcl9P
+[TTS] 会话创建: sess_DXe4JLr19NPG75vtZ2mpy
+[TTS] WebSocket连接已建立
+[CONN] [TTS] WebSocket 底层长连接已建立！
+[TTS] TTS服务初始化成功
+[EventBus] 订阅事件: ['tts_requested'], handler_id=de02b4ac-5f07-4611-971b-887bbc93bffe
+[Voice] 已订阅TTS请求事件
+[TTS] WebSocket连接已建立
+[CONN] [TTS] WebSocket 底层长连接已建立！
+[INFO] [TTS] 在后台线程中初始化，跳过信号处理注册
+[OK] [后台] TTS 初始化完成
+[Agent Driver] TTS 后台消费线程已启动
+[EventBus] 订阅事件: ['user_input_received', 'task_completed'], handler_id=805a3509-0405-4fa5-ba6b-58443e608f16
+[DriveModel] 驱动模型初始化完成
+[DriveModel] 驱动模型已加载
+
+【MemoryCore.load_files】被调用 → 文件: ['personality.md']
+   → 尝试加载: F:\AI\ai_agent\backend\core\memory\personality.md
+   → 文件是否存在: True
+   [OK] 成功加载 personality.md，内容长度: 272 字符
+【MemoryCore.load_files】最终返回长度: 296 字符
+
+[Persona] 人设已加载: yume
+[InstinctHandler] 本能处理器已初始化，LLM实例: LLMAPI
+[EventBus] 订阅事件: ['thinking_intermediate'], handler_id=aea08965-5909-4994-a127-5ff4fe9a23bf
+[EventHandlers] 思考过程互动事件处理器已注册
+[EventBus] 订阅事件: ['discovery_made'], handler_id=45ba16d9-8c30-4dbe-b99d-191e12b44e5a
+[EventHandlers] 发现事件处理器已注册
+[EventBus] 订阅事件: ['surfing_review_needed'], handler_id=6a00ba77-c2ed-4c91-ac89-cbfab707e981
+[EventHandlers] 冲浪回顾事件处理器已注册
+[Main] Live2D管理器已挂载到ws_instance
+[Main] Live2D管理器已启动
+==================================================
+[2] [主线程] 启动 Agent 独白守护...
+==================================================
+[DriveModel] 驱动模型已启动
+[OK] Agent 大脑已在后台待命
+==================================================
+[3] [主线程] 准备开启 WebSocket 8765 端口...
+==================================================
+[启动] 启动 WebSocket 服务 ws://0.0.0.0:8765
+[ERROR] WebSocket 启动失败: [Errno 10048] error while attempting to bind on address ('0.0.0.0', 8765): 通常每个套接字地址(协议/网络地址/端口)只允许使用一次。
+[CONN] [TTS] 正在关闭WebSocket连接...
+[TTS] 连接关闭 code=None, msg=None
+[OK] [TTS] WebSocket连接已关闭

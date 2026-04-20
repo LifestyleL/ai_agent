@@ -1,0 +1,20 @@
+[
+  {
+    "fragment_id": "frag_20260417_001",
+    "content": "测试TTS功能遇到授权问题，后来解决了",
+    "emotion_type": 0,
+    "emotion_label": "平静",
+    "importance": 6,
+    "source_date": "2026-04-17",
+    "create_time": "2026-04-18T17:14:36.826169"
+  },
+  {
+    "fragment_id": "frag_20260417_002",
+    "content": "用户耐心测试各种功能，挺有毅力的",
+    "emotion_type": 0,
+    "emotion_label": "平静",
+    "importance": 5,
+    "source_date": "2026-04-17",
+    "create_time": "2026-04-18T17:14:36.826169"
+  }
+]

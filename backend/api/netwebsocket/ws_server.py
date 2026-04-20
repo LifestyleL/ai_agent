@@ -4,7 +4,7 @@ import base64
 import threading
 import websockets
 from queue import Queue
-from services.live2d.live2d_manager import Live2DManager
+from deprecated.live2d.live2d_manager import Live2DManager
 from .message_router import create_router
 from .json_rpc_builder import JsonRpcBuilder
 from .error_code import ErrorCode
@@ -34,7 +34,7 @@ class WSServer:
             try:
                 import time
                 time.sleep(0.3)
-                from services.modules.tts.tts_service import TTSService
+                from services.tts.tts_service import TTSService
                 self.tts = TTSService()
                 print("[OK] [后台] TTS 初始化完成")
             except Exception as e:

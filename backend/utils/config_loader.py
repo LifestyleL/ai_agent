@@ -69,13 +69,20 @@ class ConfigLoader:
         # 加载 .env 文件
         env_path = Path(__file__).parent.parent / ".env"
         if env_path.exists():
-            load_dotenv(env_path)
+            load_dotenv(env_path, override=True)
 
         # 敏感信息映射：环境变量名 → 配置路径
         sensitive_mappings = {
             "QWEN_API_KEY": ("ai", "qwen", "api_key"),
             "DEEPSEEK_API_KEY": ("ai", "deepseek", "api_key"),
             "DASHSCOPE_API_KEY": ("tts", "api_key"),
+            # TTS配置
+            "TTS_VOICE": ("tts", "voice"),
+            "TTS_MODEL": ("tts", "model"),
+            "TTS_BASE_URL": ("tts", "base_url"),
+            # AI模型配置
+            "QWEN_MODEL": ("ai", "qwen", "model"),
+            "DEEPSEEK_MODEL": ("ai", "deepseek", "model"),
         }
 
         for env_var, config_path in sensitive_mappings.items():

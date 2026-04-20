@@ -1,0 +1,65 @@
+{
+  "history": [
+    {
+      "type": "spontaneous",
+      "timestamp": 1776518531.4718208,
+      "text": "晚上有什么安排吗？",
+      "context": {
+        "silence_duration": 139.99815917015076,
+        "priority": 1,
+        "trigger_reason": "沉默140秒 + 活跃时段 + 避免冷场",
+        "time_of_day": "晚上"
+      },
+      "user_response": "你知道前几天发生了什么吗",
+      "response_type": "positive",
+      "response_time": 60.6176495552063,
+      "classified_at": 1776518622.089735
+    },
+    {
+      "type": "spontaneous",
+      "timestamp": 1776518561.4720855,
+      "text": "有什么想聊的吗？",
+      "context": {
+        "silence_duration": 30.00628137588501,
+        "priority": 1,
+        "trigger_reason": "活跃时段 + 避免冷场",
+        "time_of_day": "晚上"
+      },
+      "user_response": "你知道前几天发生了什么吗",
+      "response_type": "positive",
+      "response_time": 60.61549258232117,
+      "classified_at": 1776518622.088179
+    },
+    {
+      "type": "spontaneous",
+      "timestamp": 1776518691.4605825,
+      "text": "在想什么呢？",
+      "context": {
+        "silence_duration": 51.52524161338806,
+        "priority": 1,
+        "trigger_reason": "活跃时段 + 避免冷场",
+        "time_of_day": "晚上"
+      },
+      "user_response": "你的记忆出错了，什么用户，我是源",
+      "response_type": "positive",
+      "response_time": 17.113561391830444,
+      "classified_at": 1776518708.574144
+    },
+    {
+      "type": "spontaneous",
+      "timestamp": 1776518761.4581385,
+      "text": "周六的早晨真舒服。",
+      "context": {
+        "silence_duration": 44.44951844215393,
+        "priority": 1,
+        "trigger_reason": "活跃时段 + 避免冷场",
+        "time_of_day": "晚上"
+      },
+      "user_response": "现在已经晚上了，什么周六早晨",
+      "response_type": "positive",
+      "response_time": 16.901737928390503,
+      "classified_at": 1776518778.3598764
+    }
+  ],
+  "updated": "2026-04-18T21:29:52.299540"
+}

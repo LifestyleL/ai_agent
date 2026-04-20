@@ -21,6 +21,7 @@ CONFIG = get_config()
 # WebSocket 配置
 WS_PORT = get("websocket", "port", default=8765)
 ENABLE_JSONRPC_RESPONSE = get("websocket", "enable_jsonrpc", default=True)
+LIVE2D_ENABLED = get("live2d", "enabled", default=False)
 
 # AI 配置
 QWEN_API_KEY = get("ai", "qwen", "api_key", default="")
@@ -40,6 +41,15 @@ TTS_BASE_URL = get("tts", "base_url", default="wss://dashscope.aliyuncs.com/api-
 
 # 记忆配置
 SHORT_TERM_MAX_TOKENS = get("memory", "short_term_max_tokens", default=4096)
+SHORT_TERM_CAPACITY_BASE = get("memory", "short_term_capacity_base", default=15)
+SHORT_TERM_CAPACITY_DYNAMIC = get("memory", "short_term_capacity_dynamic", default=True)
+SHORT_TERM_CAPACITY_MAX = get("memory", "short_term_capacity_max", default=30)
+ENABLE_VECTOR_MEMORY = get("memory", "enable_vector_memory", default=False)
+FORGETTING_STRATEGY = get("memory", "forgetting_strategy", default="importance_based")
+FORGETTING_MAX_CAPACITY = get("memory", "forgetting_max_capacity", default=2000)
+FORGETTING_AGGRESSIVENESS = get("memory", "forgetting_aggressiveness", default=0.5)
+ENABLE_WAL_LOGGING = get("memory", "enable_wal_logging", default=True)
+SHORT_TERM_HISTORY_TOKENS = get("memory", "short_term_history_tokens", default=1500)
 
 # Agent 配置
 IDLE_TIMEOUT = get("agent", "idle_timeout", default=60)
@@ -47,6 +57,7 @@ AGENT_IDLE_TIMEOUT = IDLE_TIMEOUT
 AGENT_IDLE_INTERVAL_MIN = get("agent", "idle_interval_min", default=60)
 AGENT_IDLE_INTERVAL_MAX = get("agent", "idle_interval_max", default=65)
 MAX_CONCURRENT_TTS = get("agent", "max_concurrent_tts", default=1)
+MAX_STEPS = get("agent", "max_steps", default=8)
 
 # 调试模式
 DEBUG = get("app", "debug", default=True)
@@ -78,6 +89,16 @@ CONFIG = {
         "idle_timeout": AGENT_IDLE_TIMEOUT,
         "idle_interval_min": AGENT_IDLE_INTERVAL_MIN,
         "idle_interval_max": AGENT_IDLE_INTERVAL_MAX
+    },
+    "memory": {
+        "short_term_capacity_base": SHORT_TERM_CAPACITY_BASE,
+        "short_term_capacity_dynamic": SHORT_TERM_CAPACITY_DYNAMIC,
+        "short_term_capacity_max": SHORT_TERM_CAPACITY_MAX,
+        "enable_vector_memory": ENABLE_VECTOR_MEMORY,
+        "forgetting_strategy": FORGETTING_STRATEGY,
+        "forgetting_max_capacity": FORGETTING_MAX_CAPACITY,
+        "forgetting_aggressiveness": FORGETTING_AGGRESSIVENESS,
+        "enable_wal_logging": ENABLE_WAL_LOGGING
     },
     "websocket": {
         "port": WS_PORT,

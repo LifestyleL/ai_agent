@@ -5,11 +5,11 @@ import sqlite3
 import os
 import time
 import random
-from core.memory_core import MemoryCore
+from core.memory.memory_core import MemoryCore
 from core.event.event_bus import event_bus, EventType, Event
 from api.netwebsocket.ws_server import ws_instance
 # [FIX] 修正：直接定位到 monologue.db 的实际位置
-DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "modules", "tts", "monologue.db")
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "services", "tts", "monologue.db")
 
 class Voice:
     def __init__(self, tts, live2d, llm=None, collaborator=None):
@@ -53,8 +53,44 @@ class Voice:
                 print("[CONN] [Voice] TTS连接已断，正在重建...")
                 self.tts._init_realtime_tts()
 
-            # 直接用长连接合成，不用每次 connect
-            pcm_bytes, mouth_frames = self.tts._synthesize_with_retry(text, emotion)
+            # 轮询等待 TTS 锁，避免丢句（安全网，消费者线程已保证同步）
+            max_wait_time = 30.0  # 最多等 30 秒（正常一句话不会超过 30 秒）
+            wait_interval = 0.2  # 每次检查间隔 0.2 秒
+            start_time = time.time()
+
+            pcm_bytes = None
+            mouth_frames = None
+
+            while time.time() - start_time < max_wait_time:
+                # 先检查锁状态（如果属性可访问）
+                if hasattr(self.tts, '_is_speaking') and self.tts._is_speaking:
+                    # 锁被占用，打印等待日志，然后等一下
+                    print(f"[WAIT] [Voice] TTS 正在合成上一句，等待 {wait_interval}s 后重试...")
+                    time.sleep(wait_interval)
+                    continue
+
+                # 尝试合成
+                try:
+                    pcm_bytes, mouth_frames = self.tts._synthesize_with_retry(text, emotion)
+                    break  # 合成成功，跳出循环
+                except RuntimeError as e:
+                    if "还没合成完" in str(e):
+                        # 极端情况：刚检查完没锁，进去又被锁了，继续等
+                        print(f"[WAIT] [Voice] TTS 锁竞争，等待 {wait_interval}s 后重试...")
+                        time.sleep(wait_interval)
+                        continue
+                    else:
+                        raise  # 其他类型的 RuntimeError 正常抛出
+                except Exception as e:
+                    # 其他异常直接抛出
+                    raise
+
+            # 超时处理
+            if pcm_bytes is None:
+                print(f"[ERROR] [Voice] 等待 TTS 锁超时（{max_wait_time}s），放弃本句: '{text[:20]}...'")
+                # 标记连接为断开，下次自动重连
+                self.tts._is_connected = False
+                return
 
             if len(pcm_bytes) == 0:
                 print(f"[WARN] [Voice] 合成返回空音频: '{text[:30]}...'")
@@ -188,7 +224,8 @@ class Voice:
         except Exception as e:
             print(f"[WARN] 读取独白记录失败: {e}")
         try:
-            chat_raw = MemoryCore.load_files(["short_memories.md"]) or ""
+            # [V1→V3] 已迁移至 V3 读取链路，短期记忆从 short_term.json 获取
+            chat_raw = ""  # MemoryCore.load_files(["short_memories.md"]) or ""
             if chat_raw.strip():
                 blocks = [b.strip() for b in chat_raw.split("##") if b.strip()]
                 recent_chat = "\n## ".join(blocks[-2:]) if blocks else "（无近期对话）"
@@ -204,7 +241,8 @@ class Voice:
         if random.random() < 0.5:
             db_result = self._get_db_monologue()
             if db_result:
-                MemoryCore.append_to_file("mood_blank.md", f"\n[DB剧本] {db_result['script']}")
+                # [V1→V3] 已废弃：自言自语模板暂不写入
+                # MemoryCore.append_to_file("mood_blank.md", f"\n[DB剧本] {db_result['script']}")
                 return {"type": "queue", "data": db_result}
 
         # 第二步：数据库没命中，走AI生成短句
@@ -249,76 +287,131 @@ class Voice:
                 return None
             if len(thought) > 20:
                 thought = thought[:18] + "……"
-            MemoryCore.append_to_file("mood_blank.md", f"\n{thought}")
+            # [V1→V3] 已废弃：自言自语模板暂不写入
+            # MemoryCore.append_to_file("mood_blank.md", f"\n{thought}")
             return {"type": "text", "data": thought}
         except Exception as e:
             print(f"[ERROR] 独白生成失败: {e}")
             return None
 
-    def _split_text(self, text, max_length=100):
+    def _split_tts_sentences(self, text: str, max_len: int = 40) -> list:
         """
-        将长文本分割成多个较短的句子
-
-        Args:
-            text: 要分割的文本
-            max_length: 每个分段的最大长度
-
-        Returns:
-            分割后的文本列表
+        将长文本按标点符号切分成适合 TTS 的短句
+        避免一次性发送过长文本导致 WebSocket 缓冲区溢出截断
         """
-        if len(text) <= max_length:
+        if len(text) <= max_len:
             return [text]
 
-        # 尝试按标点分割
         sentences = []
-        current = ""
+        current_sentence = ""
 
-        # 中文标点分割
-        import re
-        # 按句号、问号、感叹号、分号、逗号分割
-        pattern = r'([。！？；，\.\!\?;,])'
-        parts = re.split(pattern, text)
-
-        for i in range(0, len(parts), 2):
-            if i < len(parts):
-                sentence = parts[i]
-                if i + 1 < len(parts):
-                    sentence += parts[i + 1]
-
-                if not sentence.strip():
-                    continue
-
-                if len(current) + len(sentence) <= max_length:
-                    current += sentence
+        for char in text:
+            current_sentence += char
+            # 遇到断句符号立即切分（句号、感叹号、问号、换行）
+            if char in "。！？.!?\n":
+                sentences.append(current_sentence)
+                current_sentence = ""
+            # 如果还没遇到断句符号，但已经超过最大长度，强制在逗号处切分
+            elif len(current_sentence) >= max_len:
+                # 尝试中文逗号
+                if "，" in current_sentence:
+                    parts = current_sentence.split("，")
+                    # 把最后一个可能不完整的部分留给下一次
+                    for part in parts[:-1]:
+                        sentences.append(part + "，")
+                    current_sentence = parts[-1]
+                # 尝试英文逗号
+                elif "," in current_sentence:
+                    parts = current_sentence.split(",")
+                    for part in parts[:-1]:
+                        sentences.append(part + ",")
+                    current_sentence = parts[-1]
+                # 尝试分号、冒号
+                elif "；" in current_sentence:
+                    parts = current_sentence.split("；")
+                    for part in parts[:-1]:
+                        sentences.append(part + "；")
+                    current_sentence = parts[-1]
+                elif "：" in current_sentence:
+                    parts = current_sentence.split("：")
+                    for part in parts[:-1]:
+                        sentences.append(part + "：")
+                    current_sentence = parts[-1]
                 else:
-                    if current:
-                        sentences.append(current)
-                    current = sentence
+                    # 实在没有标点，强制切分
+                    sentences.append(current_sentence)
+                    current_sentence = ""
 
-        if current:
-            sentences.append(current)
+        if current_sentence:
+            sentences.append(current_sentence)
 
-        # 如果分割后还是太长，按长度强制分割
-        if not sentences:
-            for i in range(0, len(text), max_length):
-                sentences.append(text[i:i+max_length])
+        # 合并连续标点段，避免 ... 被切成多个独立段
+        merged = []
+        for seg in sentences:
+            seg_stripped = seg.strip()
+            # 检查是否为纯标点段（包含连续标点如 ...）
+            is_punctuation_only = all(c in "。！？.!?\n，,；：、" for c in seg_stripped)
 
+            if is_punctuation_only and merged:
+                # 如果是纯标点段，且前一段也是纯标点段，则合并
+                last_stripped = merged[-1].strip()
+                last_is_punctuation = all(c in "。！？.!?\n，,；：、" for c in last_stripped)
+                if last_is_punctuation:
+                    merged[-1] += seg  # 合并标点
+                else:
+                    merged.append(seg)
+            else:
+                merged.append(seg)
+
+        # 过滤掉空段和纯标点段（如果不想单独合成标点，可以保留但确保长度>1）
+        filtered = []
+        for seg in merged:
+            seg_stripped = seg.strip()
+            if seg_stripped and len(seg_stripped) > 0:
+                # 保留所有段，包括纯标点段（如 ... 可能是有意义的停顿）
+                filtered.append(seg)
+
+        return filtered if filtered else [text]
+
+    def _split_text(self, text, max_length=80):
+        """
+        将长文本分割成多个较短的句子（使用新的分句逻辑）
+        """
+        # 使用新的分句逻辑，但保持原有接口
+        sentences = self._split_tts_sentences(text, max_len=max_length)
         print(f"[TEXT] [文本分割] 将 {len(text)} 字符分割为 {len(sentences)} 段")
+
+        # 延迟诊断：打印分段详情
+        print(f"   [延迟诊断] 原始文本长度: {len(text)} 字符")
+        print(f"   [延迟诊断] 分段数量: {len(sentences)}")
+        for i, seg in enumerate(sentences[:5]):  # 最多打印前5段
+            seg_display = seg.strip()
+            if len(seg_display) > 30:
+                seg_display = seg_display[:30] + "..."
+            print(f"   [延迟诊断] 段{i+1}: 长度{len(seg)}字符, 内容: '{seg_display}'")
+        if len(sentences) > 5:
+            print(f"   [延迟诊断] ... 还有 {len(sentences)-5} 段未显示")
+
         return sentences
 
     def speak(self, text, emotion="neutral"):
         if text and text.strip():
-            # 如果文本太长，分割成多个短句
-            if len(text) > 150:  # 超过150字符分割
-                segments = self._split_text(text, max_length=80)
-                print(f"[AUDIO] [Voice] 长文本分割为 {len(segments)} 段，总长 {len(text)} 字符")
+            # 对所有文本进行分句处理，避免WebSocket缓冲区溢出
+            # 每句最大40字符，确保TTS能完整处理
+            segments = self._split_text(text, max_length=40)
+            print(f"[AUDIO] [Voice] 文本分割为 {len(segments)} 段，总长 {len(text)} 字符")
 
+            if len(segments) == 1:
+                # 单句直接发送
+                self._speak_async_to_thread(segments[0], emotion=emotion)
+            else:
+                # 多句需要依次发送，并添加间隔
                 # 创建线程处理所有分段
                 def speak_segmented():
                     try:
                         for i, segment in enumerate(segments):
                             if segment.strip():
-                                print(f"[AUDIO] [Voice] 分段 {i+1}/{len(segments)}: '{segment[:30]}...'")
+                                print(f"[DEBUG] [TTS] 发送分句 {i+1}/{len(segments)}: '{segment}'")
                                 # 合成当前分段
                                 try:
                                     self._speak_segment(segment, emotion=emotion)
@@ -326,7 +419,7 @@ class Voice:
                                     print(f"[WARN] [Voice] 分段 {i+1} 合成失败: {e}")
                                 # 等待当前分段完成（除了最后一个）
                                 if i < len(segments) - 1:
-                                    time.sleep(0.5)  # 分段间短暂间隔
+                                    time.sleep(0.2)  # 分段间短暂间隔，避免WebSocket缓冲区溢出
                     except Exception as e:
                         print(f"[ERROR] 分段合成线程异常: {e}")
                     finally:
@@ -335,5 +428,3 @@ class Voice:
                         self._tts_done_event.clear()
 
                 threading.Thread(target=speak_segmented, daemon=True).start()
-            else:
-                self._speak_async_to_thread(text, emotion=emotion)

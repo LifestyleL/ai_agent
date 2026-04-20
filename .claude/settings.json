@@ -1,7 +1,11 @@
 {
   "permissions": {
     "additionalDirectories": [
-      "f:\\AI\\ai_agent\\my-react-app\\my_agent\\live2d"
+      "f:\\AI\\ai_agent\\my-react-app\\my_agent\\live2d",
+      "F:\\AI\\ai_agent\\my-react-app\\my_agent\\live2d"
+    ],
+    "allow": [
+      "Bash(python -c \"from config import CONFIG, WS_PORT; print\\(f'端口: {WS_PORT}'\\); print\\(f'配置键: {list\\(CONFIG.keys\\(\\)\\)}'\\)\")"
     ]
   }
 }
