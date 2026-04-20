@@ -980,6 +980,27 @@ class YumeDriver:
         return False, full_text_received  # 继续流式循环
 
     # ----------------------------------------
+    # 状态机专用极简 TTS 入口
+    # ----------------------------------------
+    def speak_final_text(self, text: str):
+        """
+        极简外部播报入口：专供状态机微观流程使用。
+        将一段完整的最终文本喂给 TTS 队列。
+        """
+        if not text:
+            return
+
+        try:
+            # 使用与原有系统相同的 TTS 队列格式
+            tts_item = {"text": text, "emotion": self._current_emotion}
+            self._tts_queue.put(tts_item, timeout=2.0)
+            print(f"[TTS] [状态机入口] 文本已入队: '{text[:30]}...' (情感: {self._current_emotion})")
+        except queue.Full:
+            print(f"[WARN] [TTS_Queue] 队列已满，丢弃状态机文本: '{text[:20]}...'")
+        except Exception as e:
+            print(f"[TTS Error] 状态机播报失败: {e}")
+
+    # ----------------------------------------
     # 自驱动引擎回调
     # ----------------------------------------
     def _on_spontaneous_speech(self, text: str, context: Dict[str, Any]):

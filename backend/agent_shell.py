@@ -13,10 +13,13 @@ from typing import Optional
 
 from core.state_machine.state_machine import get_state_machine, State, Event
 from core.state_machine.transitions import setup_base_transitions
-from core.state_machine.actions import create_think_action
+from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
 from core.plugin_base import get_plugin_manager
 from core.memory.memory_core import MemoryCore
 from core.agent.agent_driver import YumeDriver
+from backend.plugins.registry import get_global_registry
+from backend.plugins.builtin.adapters import SearchMemoryAdapter, WriteFileAdapter
+from backend.plugins.builtin.skills.memory_summary_skill import MemorySummarySkill
 
 
 class AgentShell:
@@ -100,19 +103,36 @@ class AgentShell:
             self.agent_driver = YumeDriver()
             print("[初始化] Agent驱动初始化成功")
 
-            # 5. 配置状态机转移规则和Action
-            print("[初始化] 5. 配置状态机转移规则和Action...")
+            # 5. 配置状态机转移规则和Action（微观骨架模式）
+            print("[初始化] 5. 配置状态机转移规则和Action（微观骨架模式）...")
             sm = self.state_machine
             # 设置基础转移规则
             setup_base_transitions(sm)
-            # 创建THINK状态的Action并注册
-            think_action = create_think_action(
-                driver_instance=self.agent_driver,
-                state_machine=sm
-            )
-            sm.register_action(State.THINK, think_action)
+
+            # 5.1 工具系统插件化注册（提前，供微观 Action 使用）
+            print("[初始化] 5.1 工具系统插件化注册...")
+            reg = get_global_registry()
+            reg.register(SearchMemoryAdapter())
+            reg.register(WriteFileAdapter())
+            # 将注册中心实例挂载到 driver 上（备用，暂不强制 driver 使用）
+            self.agent_driver.tool_registry = reg
+            print(f"[初始化] 工具注册完成，已注册 {len(reg.get_all_tools())} 个工具")
+
+            # 5.2 绑定真实 Action 引擎
+            print("[初始化] 5.2 绑定真实 Action 引擎...")
+            # 暂时注释掉旧的宏观绑定
+            # think_action = create_think_action(driver_instance=self.agent_driver, state_machine=sm)
+            # sm.register_action(State.THINK, think_action)
+            # 绑定真实引擎
+            real_think = create_real_think_action(state_machine=sm, registry=reg, driver_instance=self.agent_driver)
+            real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg)
+            sm.register_action(State.THINK, real_think)
+            sm.register_action(State.DO_TOOL, real_do_tool)
+            print("[初始化] 真实 Action 绑定完成")
+
             # 将状态机挂载到driver实例，便于其他模块访问
             self.agent_driver.state_machine = sm
+
             print("[初始化] 状态机配置完成")
         except Exception as e:
             print(f"[ERROR] Agent驱动初始化失败: {e}")
@@ -120,6 +140,30 @@ class AgentShell:
 
         print("[初始化] 所有子系统初始化完成")
         return True
+
+    async def _test_skill_execution(self):
+        """启动时模拟执行一次 Skill，验证工具编排链路"""
+        print("[Test] 开始模拟执行 MemorySummarySkill...")
+
+        # 1. 从注册中心拿出刚才注册的两个适配器实例
+        reg = get_global_registry()
+        search_adapter = reg.get_tool("search_memory")
+        write_adapter = reg.get_tool("write_file")
+
+        if not search_adapter or not write_adapter:
+            print("[Test] 缺少工具适配器，跳过 Skill 测试")
+            return
+
+        # 2. 实例化 Skill 并注入依赖
+        skill = MemorySummarySkill(tools=[search_adapter, write_adapter])
+
+        # 3. 模拟执行
+        result = await skill.run(context={
+            "query": "测试查询",
+            "archive_path": "agent_memory/test_skill_output.txt"
+        })
+
+        print(f"[Test] Skill 模拟执行结果: {result}")
 
     def start(self) -> bool:
         """启动Agent"""
@@ -132,6 +176,23 @@ class AgentShell:
             self.agent_driver.start()
             self.is_running = True
             print("[启动] Agent已启动，等待用户输入...")
+
+            # 在后台线程中执行 Skill 测试（不阻塞主流程）
+            def run_skill_test():
+                try:
+                    # 创建新的事件循环用于测试
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    loop.run_until_complete(self._test_skill_execution())
+                    loop.close()
+                except Exception as e:
+                    print(f"[Test] Skill 测试执行出错: {e}")
+
+            import threading
+            test_thread = threading.Thread(target=run_skill_test, daemon=True)
+            test_thread.start()
+            print("[Test] 已启动后台线程执行 Skill 连通性测试")
+
             return True
         except Exception as e:
             print(f"[ERROR] 启动Agent失败: {e}")

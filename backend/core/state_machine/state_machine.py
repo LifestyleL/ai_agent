@@ -19,6 +19,7 @@ class Event(Enum):
     ERROR = "ERROR"
     USER_CANCEL = "USER_CANCEL"
     TASK_COMPLETE = "TASK_COMPLETE"
+    NEED_TOOL = "NEED_TOOL"
 
 class StateMachine:
     """标准有限状态机 (FSM)"""

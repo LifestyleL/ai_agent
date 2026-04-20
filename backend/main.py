@@ -14,7 +14,9 @@ from api.netwebsocket.ws_server import WSServer
 from config import WS_PORT
 from core.state_machine.state_machine import get_state_machine, State, Event
 from core.state_machine.transitions import setup_base_transitions
-from core.state_machine.actions import create_think_action
+from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
+from backend.plugins.registry import get_global_registry
+from backend.plugins.builtin.adapters import SearchMemoryAdapter, WriteFileAdapter
 
 ws_instance = WSServer()
 
@@ -34,15 +36,28 @@ async def main():
             ws_instance.live2d.start()
             print(f"[Main] Live2D管理器已启动")
 
-        # 配置状态机转移规则和Action
-        print("[Main] 配置状态机...")
+        # 配置状态机转移规则和Action（真实引擎模式）
+        print("[Main] 配置状态机（真实引擎模式）...")
         sm = get_state_machine()
         setup_base_transitions(sm)
-        think_action = create_think_action(
-            driver_instance=driver,
-            state_machine=sm
-        )
-        sm.register_action(State.THINK, think_action)
+
+        # 工具系统插件化注册
+        print("[Main] 工具系统插件化注册...")
+        reg = get_global_registry()
+        reg.register(SearchMemoryAdapter())
+        reg.register(WriteFileAdapter())
+        # 将注册中心实例挂载到 driver 上（备用）
+        driver.tool_registry = reg
+        print(f"[Main] 工具注册完成，已注册 {len(reg.get_all_tools())} 个工具")
+
+        # 绑定真实 Action 引擎
+        print("[Main] 绑定真实 Action 引擎...")
+        real_think = create_real_think_action(state_machine=sm, registry=reg, driver_instance=driver)
+        real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg)
+        sm.register_action(State.THINK, real_think)
+        sm.register_action(State.DO_TOOL, real_do_tool)
+        print("[Main] 真实 Action 绑定完成")
+
         # 将状态机挂载到driver实例
         driver.state_machine = sm
         print("[Main] 状态机配置完成")
