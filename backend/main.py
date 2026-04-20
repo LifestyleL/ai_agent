@@ -47,6 +47,15 @@ async def main():
         driver.state_machine = sm
         print("[Main] 状态机配置完成")
 
+        # 调试：打印状态机转移规则
+        print(f"[Main] 状态机ID: {id(sm)}")
+        print(f"[Main] 状态机transitions数量: {len(sm._transitions)}")
+        for key, to_state in sm._transitions.items():
+            # 解析字符串键: "IDLE:USER_INPUT"
+            from_state_value, event_value = key.split(':')
+            # 需要从值映射回枚举，简单起见直接打印原始值
+            print(f"[Main] 转移: {from_state_value} + {event_value} -> {to_state.name}")
+
         print("="*50)
         print("[2] [主线程] 启动 Agent 独白守护...")
         print("="*50)
@@ -71,10 +80,16 @@ async def main():
                 if text.strip():
                     # 使用状态机触发用户输入事件
                     if hasattr(driver, 'state_machine'):
+                        print(f"[DEBUG] driver.state_machine ID: {id(driver.state_machine)}")
+                        print(f"[DEBUG] 触发事件: USER_INPUT, 当前状态: {driver.state_machine.current_state}")
+                        print(f"[DEBUG] 事件循环ID: {id(loop)}")
                         coro = driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text.strip()})
-                        asyncio.run_coroutine_threadsafe(coro, loop)
+                        print(f"[DEBUG] 创建协程: {coro}")
+                        future = asyncio.run_coroutine_threadsafe(coro, loop)
+                        print(f"[DEBUG] 已调度Future: {future}")
                     else:
                         # 降级：直接调用原有逻辑（不应发生）
+                        print("[DEBUG] driver没有state_machine属性，降级到原有逻辑")
                         driver.handle_user_input(text.strip())
             except EOFError:
                 break

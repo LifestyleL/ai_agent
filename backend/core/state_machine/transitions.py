@@ -2,6 +2,7 @@ from backend.core.state_machine.state_machine import StateMachine, State, Event
 
 def setup_base_transitions(sm: StateMachine):
     """配置基础的状态转移规则表"""
+    print(f"[FSM Transitions] 开始配置状态机转移规则，状态机ID: {id(sm)}")
     # 用户输入时：无论在哪个状态，都进入思考
     sm.register_transition(State.IDLE, Event.USER_INPUT, State.THINK)
     sm.register_transition(State.FINISH, Event.USER_INPUT, State.THINK)
