@@ -26,8 +26,21 @@ class Live2DManager:
             pass
         # 禁用时什么也不做
 
-    # 可以根据需要添加其他方法占位
-    # 例如：update_animation(), shutdown() 等
+    def start(self) -> None:
+        """启动 Live2D 动画循环（空实现）"""
+        if self.enabled:
+            print("[Live2DManager] Live2D 动画循环已启动（空实现）")
+        # 禁用时什么也不做
+
+    def update(self) -> None:
+        """更新 Live2D 状态（空实现）"""
+        if self.enabled:
+            pass
+
+    def send_params(self, params: dict) -> None:
+        """发送 Live2D 参数（空实现）"""
+        if self.enabled:
+            pass
 
     def shutdown(self) -> None:
         """关闭 Live2D（空实现）"""

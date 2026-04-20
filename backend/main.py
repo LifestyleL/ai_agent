@@ -12,6 +12,9 @@ if parent_dir not in sys.path:
 
 from api.netwebsocket.ws_server import WSServer
 from config import WS_PORT
+from core.state_machine.state_machine import get_state_machine, State, Event
+from core.state_machine.transitions import setup_base_transitions
+from core.state_machine.actions import create_think_action
 
 ws_instance = WSServer()
 
@@ -30,6 +33,20 @@ async def main():
         if ws_instance.live2d:
             ws_instance.live2d.start()
             print(f"[Main] Live2D管理器已启动")
+
+        # 配置状态机转移规则和Action
+        print("[Main] 配置状态机...")
+        sm = get_state_machine()
+        setup_base_transitions(sm)
+        think_action = create_think_action(
+            driver_instance=driver,
+            state_machine=sm
+        )
+        sm.register_action(State.THINK, think_action)
+        # 将状态机挂载到driver实例
+        driver.state_machine = sm
+        print("[Main] 状态机配置完成")
+
         print("="*50)
         print("[2] [主线程] 启动 Agent 独白守护...")
         print("="*50)
@@ -37,6 +54,9 @@ async def main():
     except Exception as e:
         print(f"[ERROR] Agent 启动失败: {e}")
         sys.exit(1)
+
+    # 获取事件循环用于状态机触发
+    loop = asyncio.get_running_loop()
 
     # [FIX] 终端输入线程
     def stdin_loop():
@@ -49,7 +69,13 @@ async def main():
             try:
                 text = input("user：")
                 if text.strip():
-                    driver.handle_user_input(text.strip())
+                    # 使用状态机触发用户输入事件
+                    if hasattr(driver, 'state_machine'):
+                        coro = driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text.strip()})
+                        asyncio.run_coroutine_threadsafe(coro, loop)
+                    else:
+                        # 降级：直接调用原有逻辑（不应发生）
+                        driver.handle_user_input(text.strip())
             except EOFError:
                 break
             except Exception as e:

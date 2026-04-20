@@ -5,7 +5,9 @@ WebSocket 消息路由器
 
 import json
 import logging
+import asyncio
 from typing import Dict, Any, Optional, Tuple
+from core.state_machine.state_machine import Event
 
 logger = logging.getLogger(__name__)
 
@@ -227,8 +229,16 @@ class MessageRouter:
                 if self.ws_server.driver is None:
                     from core.agent.agent_driver import YumeDriver
                     self.ws_server.driver = YumeDriver()
-                import threading
-                threading.Thread(target=self.ws_server.driver.handle_user_input, args=("",), daemon=True).start()
+                    # 配置状态机
+                    if hasattr(self.ws_server, '_setup_driver_state_machine'):
+                        self.ws_server._setup_driver_state_machine(self.ws_server.driver)
+                    else:
+                        # 降级：直接调用原有逻辑
+                        import threading
+                        threading.Thread(target=self.ws_server.driver.handle_user_input, args=("",), daemon=True).start()
+                        return True
+                # 使用状态机触发用户输入事件（空字符串表示信号）
+                asyncio.create_task(self.ws_server.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": ""}))
                 return True
             except Exception as e:
                 logger.error(f"信号处理失败: {e}")
@@ -236,11 +246,22 @@ class MessageRouter:
 
         # 处理用户输入
         text = params.get("text", "").strip()
-        if text and self.ws_server.driver:
+        if text:
             try:
+                if self.ws_server.driver is None:
+                    from core.agent.agent_driver import YumeDriver
+                    self.ws_server.driver = YumeDriver()
+                    # 配置状态机
+                    if hasattr(self.ws_server, '_setup_driver_state_machine'):
+                        self.ws_server._setup_driver_state_machine(self.ws_server.driver)
+                    else:
+                        # 降级：直接调用原有逻辑
+                        import threading
+                        threading.Thread(target=self.ws_server.driver.handle_user_input, args=(text,), daemon=True).start()
+                        return True
                 print(f"[消息] [WS] 收到用户输入: {text[:30]}...")
-                import threading
-                threading.Thread(target=self.ws_server.driver.handle_user_input, args=(text,), daemon=True).start()
+                # 使用状态机触发用户输入事件
+                asyncio.create_task(self.ws_server.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text}))
                 return True
             except Exception as e:
                 logger.error(f"用户输入处理失败: {e}")

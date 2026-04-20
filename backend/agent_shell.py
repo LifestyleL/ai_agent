@@ -11,7 +11,9 @@ import sys
 import time
 from typing import Optional
 
-from core.state_machine.state_machine import get_state_machine
+from core.state_machine.state_machine import get_state_machine, State, Event
+from core.state_machine.transitions import setup_base_transitions
+from core.state_machine.actions import create_think_action
 from core.plugin_base import get_plugin_manager
 from core.memory.memory_core import MemoryCore
 from core.agent.agent_driver import YumeDriver
@@ -97,6 +99,21 @@ class AgentShell:
         try:
             self.agent_driver = YumeDriver()
             print("[初始化] Agent驱动初始化成功")
+
+            # 5. 配置状态机转移规则和Action
+            print("[初始化] 5. 配置状态机转移规则和Action...")
+            sm = self.state_machine
+            # 设置基础转移规则
+            setup_base_transitions(sm)
+            # 创建THINK状态的Action并注册
+            think_action = create_think_action(
+                driver_instance=self.agent_driver,
+                state_machine=sm
+            )
+            sm.register_action(State.THINK, think_action)
+            # 将状态机挂载到driver实例，便于其他模块访问
+            self.agent_driver.state_machine = sm
+            print("[初始化] 状态机配置完成")
         except Exception as e:
             print(f"[ERROR] Agent驱动初始化失败: {e}")
             return False

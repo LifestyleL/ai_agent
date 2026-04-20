@@ -9,6 +9,9 @@ from .message_router import create_router
 from .json_rpc_builder import JsonRpcBuilder
 from .error_code import ErrorCode
 from config import WS_PORT
+from core.state_machine.state_machine import get_state_machine, State, Event
+from core.state_machine.transitions import setup_base_transitions
+from core.state_machine.actions import create_think_action
 class WSServer:
     _instance = None 
     
@@ -41,6 +44,19 @@ class WSServer:
                 print(f"[ERROR] [后台] TTS 初始化失败: {e}")
         
         threading.Thread(target=init_tts, daemon=True).start()
+
+    def _setup_driver_state_machine(self, driver):
+        """配置driver的状态机"""
+        print("[WSServer] 配置driver状态机...")
+        sm = get_state_machine()
+        setup_base_transitions(sm)
+        think_action = create_think_action(
+            driver_instance=driver,
+            state_machine=sm
+        )
+        sm.register_action(State.THINK, think_action)
+        driver.state_machine = sm
+        print("[WSServer] 状态机配置完成")
 
     async def _handle_client(self, websocket):
         self.websocket = websocket
@@ -86,7 +102,10 @@ class WSServer:
                     if self.driver is None:
                         from core.agent.agent_driver import YumeDriver
                         self.driver = YumeDriver()
-                    threading.Thread(target=self.driver.handle_user_input, args=("",), daemon=True).start()
+                        # 配置状态机
+                        self._setup_driver_state_machine(self.driver)
+                    # 使用状态机触发用户输入事件（空字符串表示信号）
+                    asyncio.create_task(self.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": ""}))
                     continue
 
                 text = data.get("text", "").strip()
@@ -108,9 +127,15 @@ class WSServer:
                     continue
 
                 # [FIX][FIX][FIX] 分支3: 用户正常输入（之前这里完全缺失！）
-                if text and self.driver:
+                if text:
+                    if self.driver is None:
+                        from core.agent.agent_driver import YumeDriver
+                        self.driver = YumeDriver()
+                        # 配置状态机
+                        self._setup_driver_state_machine(self.driver)
                     print(f"[消息] [WS] 收到用户输入: {text[:30]}...")
-                    threading.Thread(target=self.driver.handle_user_input, args=(text,), daemon=True).start()
+                    # 使用状态机触发用户输入事件
+                    asyncio.create_task(self.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text}))
                     continue
 
                 # 分支4: Live2D参数控制

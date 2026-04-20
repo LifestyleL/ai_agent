@@ -1,0 +1,24 @@
+from backend.core.state_machine.state_machine import StateMachine, State, Event
+
+def setup_base_transitions(sm: StateMachine):
+    """配置基础的状态转移规则表"""
+    # 用户输入时：无论在哪个状态，都进入思考
+    sm.register_transition(State.IDLE, Event.USER_INPUT, State.THINK)
+    sm.register_transition(State.FINISH, Event.USER_INPUT, State.THINK)
+    sm.register_transition(State.ASK_USER, Event.USER_INPUT, State.THINK)
+
+    # 工具执行完毕，回到思考（让主脑决定下一步）
+    sm.register_transition(State.DO_TOOL, Event.TOOL_RETURN, State.THINK)
+
+    # 错误处理：工具出错也回到思考
+    sm.register_transition(State.DO_TOOL, Event.ERROR, State.THINK)
+
+    # 超时处理
+    sm.register_transition(State.ASK_USER, Event.TIMEOUT, State.IDLE)
+    sm.register_transition(State.WAIT_CONFIRM, Event.TIMEOUT, State.IDLE)
+
+    # 原有逻辑整体执行完毕（无论成功失败），回到空闲
+    sm.register_transition(State.THINK, Event.TASK_COMPLETE, State.IDLE)
+
+    # 如果执行出错，也回到空闲（兜底）
+    sm.register_transition(State.THINK, Event.ERROR, State.IDLE)
