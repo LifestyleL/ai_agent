@@ -14,8 +14,8 @@ def setup_base_transitions(sm: StateMachine):
     # 主脑思考后，认为需要工具，跳转到 DO_TOOL
     sm.register_transition(State.THINK, Event.NEED_TOOL, State.DO_TOOL)
 
-    # 错误处理：工具出错也回到思考
-    sm.register_transition(State.DO_TOOL, Event.ERROR, State.THINK)
+    # 错误处理：工具出错直接回到空闲（避免死循环）
+    sm.register_transition(State.DO_TOOL, Event.ERROR, State.IDLE)
 
     # 超时处理
     sm.register_transition(State.ASK_USER, Event.TIMEOUT, State.IDLE)

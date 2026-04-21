@@ -101,12 +101,91 @@ class Voice:
             audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
             visemes = [f for f in mouth_frames if f['v'] > 0.01 or f == mouth_frames[0]]
 
-            
-            if self.live2d:
-                self.live2d.send_tts(audio_b64, visemes)
-                print(f"[TARGET] [Voice] 分段音频已发送到Live2D: '{text[:20]}...'")
-            else:
-                print("[WARN] [Voice] self.live2d 未初始化")
+            # 优先通过WebSocket发送音频到前端
+            try:
+                from api.netwebsocket.ws_server import ws_instance
+                if hasattr(ws_instance, '_send') and hasattr(ws_instance, 'websocket') and ws_instance.websocket:
+                    # 通过WebSocket发送TTS_AUDIO消息
+                    import asyncio
+                    message = {"type": "TTS_AUDIO", "audio_base64": audio_b64, "visemes": visemes}
+
+                    # 获取或创建事件循环
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        # 如果没有事件循环，创建一个新的
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+
+                    # 在事件循环中异步发送
+                    async def send_audio():
+                        try:
+                            await ws_instance._send(message)
+                            print(f"[TARGET] [Voice] 分段音频已通过WebSocket发送到前端: '{text[:20]}...'")
+                        except Exception as e:
+                            print(f"[WARN] [Voice] WebSocket发送失败: {e}")
+                            # 降级：尝试通过Live2D发送
+                            if self.live2d:
+                                self.live2d.send_tts(audio_b64, visemes)
+                                print(f"[TARGET] [Voice] 分段音频已发送到Live2D: '{text[:20]}...'")
+
+                    # 如果当前线程有事件循环，直接运行
+                    try:
+                        asyncio.get_running_loop()
+                        # 已经在事件循环中，创建任务
+                        asyncio.create_task(send_audio())
+                    except RuntimeError:
+                        # 不在事件循环中，在后台线程中运行
+                        import threading
+                        def run_in_thread():
+                            try:
+                                loop.run_until_complete(send_audio())
+                            except Exception as e:
+                                print(f"[WARN] [Voice] 线程中发送音频失败: {e}")
+                        threading.Thread(target=run_in_thread, daemon=True).start()
+                else:
+                    print("[WARN] [Voice] ws_instance没有_send方法或WebSocket未连接")
+                    # 备选方案：如果ws_instance有send_queue，将消息放入队列
+                    if hasattr(ws_instance, 'send_queue'):
+                        try:
+                            message = {"type": "TTS_AUDIO", "audio_base64": audio_b64, "visemes": visemes}
+                            ws_instance.send_queue.put(message)
+                            print(f"[QUEUE] [Voice] 分段音频已放入WebSocket发送队列: '{text[:20]}...'")
+                        except Exception as e:
+                            print(f"[WARN] [Voice] 放入队列失败: {e}")
+                            # 降级：尝试通过Live2D发送
+                            if self.live2d:
+                                self.live2d.send_tts(audio_b64, visemes)
+                                print(f"[TARGET] [Voice] 分段音频已发送到Live2D: '{text[:20]}...'")
+                    else:
+                        # 降级：尝试通过Live2D发送
+                        if self.live2d:
+                            self.live2d.send_tts(audio_b64, visemes)
+                            print(f"[TARGET] [Voice] 分段音频已发送到Live2D: '{text[:20]}...'")
+            except Exception as e:
+                print(f"[WARN] [Voice] 通过WebSocket发送音频失败: {e}")
+                # 备选方案：如果ws_instance有send_queue，将消息放入队列
+                try:
+                    from api.netwebsocket.ws_server import ws_instance
+                    if hasattr(ws_instance, 'send_queue'):
+                        message = {"type": "TTS_AUDIO", "audio_base64": audio_b64, "visemes": visemes}
+                        ws_instance.send_queue.put(message)
+                        print(f"[QUEUE] [Voice] 分段音频已放入WebSocket发送队列（异常备选）: '{text[:20]}...'")
+                    else:
+                        # 降级：尝试通过Live2D发送
+                        if self.live2d:
+                            self.live2d.send_tts(audio_b64, visemes)
+                            print(f"[TARGET] [Voice] 分段音频已发送到Live2D: '{text[:20]}...'")
+                        else:
+                            print("[WARN] [Voice] self.live2d 未初始化")
+                except Exception as inner_e:
+                    print(f"[WARN] [Voice] 异常备选方案也失败: {inner_e}")
+                    # 最后尝试Live2D
+                    if self.live2d:
+                        self.live2d.send_tts(audio_b64, visemes)
+                        print(f"[TARGET] [Voice] 分段音频已发送到Live2D: '{text[:20]}...'")
+                    else:
+                        print("[WARN] [Voice] self.live2d 未初始化")
 
         except Exception as e:
             print(f"[ERROR] 分段合成异常: {e}")

@@ -43,6 +43,11 @@ class TTSService:
         # 初始化清理标志
         self._cleaned_up = False
 
+        # 心跳保活机制
+        self._stop_heartbeat = False
+        self._heartbeat_thread = None
+        self._start_heartbeat()
+
         self._initialized = True
 
         # 注册退出清理函数
@@ -63,6 +68,60 @@ class TTSService:
         # 不立即退出，让程序正常结束
         print(f"[OK] [TTS] 清理完成，程序将退出")
 
+    def _start_heartbeat(self):
+        """启动心跳保活线程"""
+        if self._heartbeat_thread and self._heartbeat_thread.is_alive():
+            print("[HEARTBEAT] [TTS] 心跳线程已在运行")
+            return
+
+        self._stop_heartbeat = False
+        self._heartbeat_thread = threading.Thread(
+            target=self._heartbeat_loop,
+            name="TTS-Heartbeat",
+            daemon=True
+        )
+        self._heartbeat_thread.start()
+        print("[HEARTBEAT] [TTS] 心跳保活线程已启动（间隔30秒）")
+
+    def _stop_heartbeat_thread(self):
+        """停止心跳线程"""
+        if not self._heartbeat_thread:
+            return
+
+        self._stop_heartbeat = True
+        if self._heartbeat_thread.is_alive():
+            self._heartbeat_thread.join(timeout=5.0)
+            if self._heartbeat_thread.is_alive():
+                print("[WARN] [TTS] 心跳线程未能正常停止")
+            else:
+                print("[HEARTBEAT] [TTS] 心跳线程已停止")
+        self._heartbeat_thread = None
+
+    def _heartbeat_loop(self):
+        """心跳循环，每30秒检查一次连接状态"""
+        import time
+        heartbeat_interval = 30  # 秒
+
+        while not self._stop_heartbeat:
+            time.sleep(heartbeat_interval)
+
+            if self._stop_heartbeat:
+                break
+
+            try:
+                # 检查连接状态
+                if hasattr(self, '_is_connected') and self._is_connected:
+                    # 连接正常，记录日志（减少日志噪音，只在调试时开启）
+                    # print("[HEARTBEAT] [TTS] 连接状态正常")
+                    pass
+                else:
+                    print("[HEARTBEAT] [TTS] 检测到连接断开，尝试重新连接...")
+                    # 尝试重新连接
+                    self._ensure_connected()
+            except Exception as e:
+                print(f"[ERROR] [TTS] 心跳检查异常: {e}")
+                # 继续循环，下次再试
+
     def _cleanup(self):
         """清理WebSocket连接（安全，可多次调用）"""
         # 防止重复清理
@@ -81,6 +140,9 @@ class TTSService:
                     self._is_connected = False
                     self._tts = None
         finally:
+            # 停止心跳线程
+            if hasattr(self, '_stop_heartbeat'):
+                self._stop_heartbeat_thread()
             self._cleaned_up = True
 
     def __del__(self):

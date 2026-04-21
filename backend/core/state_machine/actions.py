@@ -122,9 +122,10 @@ def create_real_think_action(state_machine: StateMachine, registry: any, driver_
 核心规则
 仅返回JSON格式，不输出任何其他文字（包括开场白、结束语、思考过程）；
 严格按照以下固定格式输出，参数缺失时，补充合理默认值；
-need_tool为true时，必须填写tool_name和params；need_tool为false时，tool_name和params留空；
+need_tool为true时，必须填写tool_name和params（单个工具）或tools数组（多个工具）；need_tool为false时，tool_name、params和tools留空；
 can_answer为true时，代表当前信息足够回答，可停止工具调用；can_answer为false时，需继续调用工具；
-若已调用过工具，需结合工具结果判断是否需要继续调用，避免重复调用。
+若已调用过工具，需结合工具结果判断是否需要继续调用，避免重复调用；
+支持批量工具调用：当需要同时调用多个工具时，使用tools数组，每个元素包含tool_name和params。
 可用工具列表
 {tools_json}
 
@@ -140,7 +141,11 @@ can_answer为true时，代表当前信息足够回答，可停止工具调用；
 "can_answer": true/false,
 "thought": "简短思考（10字以内）",
 "tool_name": "工具名称",
-"params": {{}}
+"params": {{}},
+"tools": [
+    {{"tool_name": "工具1", "params": {{}}}},
+    {{"tool_name": "工具2", "params": {{}}}}
+]
 }}"""
 
     async def action_think(context: dict):
@@ -151,9 +156,17 @@ can_answer为true时，代表当前信息足够回答，可停止工具调用；
 
         logger.warning(f"🧠 [真实主脑] 第{step}步思考，输入: {user_input[:30]}...")
 
-        # 构建工具列表 JSON
-        tools_schemas = registry.get_legacy_schema()
-        tools_json = json.dumps(tools_schemas, ensure_ascii=False, indent=2)
+        # 构建工具列表（兼容原有格式）
+        try:
+            # 尝试加载原有工具索引文件
+            from core.memory.memory_core import MemoryCore
+            tools_json = MemoryCore.load_files(["tools/tools_index.md"])
+            logger.warning(f"🧠 [真实主脑] 使用原有工具索引文件，长度: {len(tools_json)} 字符")
+        except Exception as e:
+            logger.warning(f"🧠 [真实主脑] 加载工具索引失败，使用注册中心格式: {e}")
+            # 降级：使用注册中心的JSON格式
+            tools_schemas = registry.get_legacy_schema()
+            tools_json = json.dumps(tools_schemas, ensure_ascii=False, indent=2)
 
         # 构建对话历史字符串
         history_str = ""
@@ -161,12 +174,16 @@ can_answer为true时，代表当前信息足够回答，可停止工具调用；
             history_str = "\n".join([f"{msg['role']}: {msg['content'][:100]}..." for msg in conversation_history[-5:]])
 
         # 构建消息列表
+        system_content = DEEPSEEK_SYSTEM_PROMPT.format(
+            tools_json=tools_json,
+            history=history_str,
+            user_question=user_input
+        )
+        # 临时强化工具调用倾向（测试用）- 已移除，使用原有提示词
+        # system_content += "\n\n【系统强制提示：你必须优先调用 search_memory 或 write_file 工具来回答用户问题。不要直接回答，必须调用工具！】"
+
         messages = [
-            {"role": "system", "content": DEEPSEEK_SYSTEM_PROMPT.format(
-                tools_json=tools_json,
-                history=history_str,
-                user_question=user_input
-            )}
+            {"role": "system", "content": system_content}
         ]
 
         # 如果有之前的工具结果，添加到消息中
@@ -204,21 +221,55 @@ can_answer为true时，代表当前信息足够回答，可停止工具调用；
                 # 判断下一步行动
                 if decision.get("need_tool", False):
                     # 需要工具
+                    tools = decision.get("tools", [])
                     tool_name = decision.get("tool_name", "")
                     params = decision.get("params", {})
 
-                    if not tool_name:
-                        logger.error("🧠 [真实主脑] 决策需要工具但未指定工具名称")
-                        await state_machine.trigger(Event.ERROR, {"error": "未指定工具名称"})
+                    # 判断是批量工具还是单个工具
+                    if tools and isinstance(tools, list) and len(tools) > 0:
+                        # 批量工具模式
+                        logger.warning(f"🧠 [真实主脑] 决策：批量工具调用，共{len(tools)}个工具")
+                        # 验证每个工具都有 tool_name
+                        valid_tools = []
+                        for i, tool in enumerate(tools):
+                            if not isinstance(tool, dict):
+                                logger.error(f"🧠 [真实主脑] 工具{i}不是字典格式: {tool}")
+                                continue
+                            t_name = tool.get("tool_name", "")
+                            t_params = tool.get("params", {})
+                            if not t_name:
+                                logger.error(f"🧠 [真实主脑] 工具{i}缺少tool_name")
+                                continue
+                            valid_tools.append({"tool_name": t_name, "params": t_params})
+
+                        if not valid_tools:
+                            logger.error("🧠 [真实主脑] 批量工具列表中无有效工具")
+                            await state_machine.trigger(Event.ERROR, {"error": "批量工具列表中无有效工具"})
+                            return
+
+                        # 准备批量工具调用上下文
+                        context["tool_batch"] = valid_tools
+                        context["tool_thought"] = decision.get("thought", "")
+                        context["is_batch"] = True
+
+                        # 触发 NEED_TOOL 事件，跳转到 DO_TOOL（DO_TOOL会处理批量）
+                        await state_machine.trigger(Event.NEED_TOOL, context)
+
+                    elif tool_name:
+                        # 单个工具模式（向后兼容）
+                        logger.warning(f"🧠 [真实主脑] 决策：单个工具调用: {tool_name}")
+                        # 准备工具调用上下文
+                        context["tool_name"] = tool_name
+                        context["tool_params"] = params
+                        context["tool_thought"] = decision.get("thought", "")
+                        context["is_batch"] = False
+
+                        # 触发 NEED_TOOL 事件，跳转到 DO_TOOL
+                        await state_machine.trigger(Event.NEED_TOOL, context)
+                    else:
+                        logger.error("🧠 [真实主脑] 决策需要工具但未指定工具名称或工具列表")
+                        await state_machine.trigger(Event.ERROR, {"error": "未指定工具名称或工具列表"})
                         return
-
-                    # 准备工具调用上下文
-                    context["tool_name"] = tool_name
-                    context["tool_params"] = params
-                    context["tool_thought"] = decision.get("thought", "")
-
-                    # 触发 NEED_TOOL 事件，跳转到 DO_TOOL
-                    await state_machine.trigger(Event.NEED_TOOL, context)
 
                 elif decision.get("can_answer", False):
                     # 可以回答，调用 Qwen 生成最终回复
@@ -279,52 +330,146 @@ def create_real_do_tool_action(state_machine: StateMachine, registry: any):
     llm_deepseek = LLMAPI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, model=DEEPSEEK_MODEL)
 
     async def action_do_tool(context: dict):
-        tool_name = context.get("tool_name", "")
-        tool_params = context.get("tool_params", {})
-        tool_thought = context.get("tool_thought", "")
+        tool_batch = context.get("tool_batch", [])
+        is_batch = context.get("is_batch", False)
 
-        logger.warning(f"🛠️ [真实执行者] 准备调用工具: {tool_name}, 参数: {tool_params}")
+        if is_batch and tool_batch:
+            # 批量工具模式：并行执行多个工具
+            logger.warning(f"🛠️ [真实执行者] 批量工具调用，共{len(tool_batch)}个工具")
 
-        if not tool_name:
-            logger.error("🛠️ [真实执行者] 工具名称为空")
-            await state_machine.trigger(Event.ERROR, {"error": "工具名称为空"})
-            return
+            async def execute_single_tool(tool_info):
+                """执行单个工具"""
+                tool_name = tool_info.get("tool_name", "")
+                tool_params = tool_info.get("params", {})
 
-        try:
-            # 从注册中心获取工具并执行
-            tool = registry.get_tool(tool_name)
-            if not tool:
-                logger.error(f"🛠️ [真实执行者] 工具未注册: {tool_name}")
-                await state_machine.trigger(Event.ERROR, {"error": f"工具未注册: {tool_name}"})
-                return
+                if not tool_name:
+                    logger.error(f"🛠️ [批量执行] 工具信息缺少tool_name: {tool_info}")
+                    return {"tool_name": "", "params": {}, "tool_result": None, "error": "缺少工具名称"}
 
-            # 执行工具，传递 llm 参数（某些工具需要）
-            logger.warning(f"🛠️ [真实执行者] 开始执行工具: {tool_name}")
-            # 合并参数，添加 llm 实例
-            all_params = {**tool_params, "llm": llm_deepseek}
-            tool_result = registry.execute_tool(tool_name, **all_params)
-            logger.warning(f"🛠️ [真实执行者] 工具执行完毕，结果: {str(tool_result)[:100]}...")
+                try:
+                    # 从注册中心获取工具
+                    tool = registry.get_tool(tool_name)
+                    if not tool:
+                        logger.error(f"🛠️ [批量执行] 工具未注册: {tool_name}")
+                        return {"tool_name": tool_name, "params": tool_params, "tool_result": None, "error": f"工具未注册: {tool_name}"}
 
-            # 更新上下文
-            context["tool_result"] = tool_result
+                    # 执行工具，传递 llm 参数
+                    logger.warning(f"🛠️ [批量执行] 开始执行工具: {tool_name}")
+                    # 过滤掉空字符串值
+                    filtered_params = {k: v for k, v in tool_params.items() if v}
+                    if not filtered_params:
+                        logger.warning(f"🛠️ [批量执行] 工具 {tool_name} 参数为空，使用默认值")
+                        filtered_params = tool_params
+                    # 合并参数，添加 llm 实例
+                    all_params = {**filtered_params, "llm": llm_deepseek}
+                    # 使用 asyncio.to_thread 执行同步工具函数，避免阻塞
+                    tool_result = await asyncio.to_thread(registry.execute_tool, tool_name, **all_params)
+                    logger.warning(f"🛠️ [批量执行] 工具执行完毕: {tool_name}, 结果长度: {len(str(tool_result))}")
 
-            # 记录到工具结果列表
+                    return {
+                        "tool_name": tool_name,
+                        "params": tool_params,
+                        "tool_result": tool_result,
+                        "error": None
+                    }
+
+                except Exception as e:
+                    logger.error(f"🛠️ [批量执行] 工具执行异常 {tool_name}: {e}")
+                    return {
+                        "tool_name": tool_name,
+                        "params": tool_params,
+                        "tool_result": None,
+                        "error": str(e)
+                    }
+
+            # 并行执行所有工具
+            tasks = [execute_single_tool(tool_info) for tool_info in tool_batch]
+            batch_results = await asyncio.gather(*tasks, return_exceptions=False)
+
+            # 处理结果
+            successful_results = []
+            for result in batch_results:
+                if result.get("error"):
+                    logger.error(f"🛠️ [批量执行] 工具 {result.get('tool_name')} 失败: {result.get('error')}")
+                else:
+                    successful_results.append(result)
+
+            logger.warning(f"🛠️ [真实执行者] 批量工具执行完成，成功: {len(successful_results)}/{len(batch_results)}")
+
+            # 更新上下文：将所有结果添加到 tool_results
             if "tool_results" not in context:
                 context["tool_results"] = []
 
-            context["tool_results"].append({
-                "tool_name": tool_name,
-                "params": tool_params,
-                "tool_result": tool_result,
-                "decision": context.get("last_decision", {})
-            })
+            for result in successful_results:
+                context["tool_results"].append({
+                    "tool_name": result["tool_name"],
+                    "params": result["params"],
+                    "tool_result": result["tool_result"],
+                    "decision": context.get("last_decision", {})
+                })
+
+            # 如果有成功结果，设置 tool_result 为第一个成功结果（向后兼容）
+            if successful_results:
+                context["tool_result"] = successful_results[0]["tool_result"]
+            else:
+                context["tool_result"] = None
 
             # 触发 TOOL_RETURN 事件，回到 THINK
             await state_machine.trigger(Event.TOOL_RETURN, context)
 
-        except Exception as e:
-            logger.error(f"🛠️ [真实执行者] 工具执行异常: {e}")
-            await state_machine.trigger(Event.ERROR, {"error": f"工具执行异常: {e}"})
+        else:
+            # 单个工具模式（向后兼容）
+            tool_name = context.get("tool_name", "")
+            tool_params = context.get("tool_params", {})
+            tool_thought = context.get("tool_thought", "")
+
+            logger.warning(f"🛠️ [真实执行者] 准备调用工具: {tool_name}, 参数: {tool_params}")
+
+            if not tool_name:
+                logger.error("🛠️ [真实执行者] 工具名称为空")
+                await state_machine.trigger(Event.ERROR, {"error": "工具名称为空"})
+                return
+
+            try:
+                # 从注册中心获取工具并执行
+                tool = registry.get_tool(tool_name)
+                if not tool:
+                    logger.error(f"🛠️ [真实执行者] 工具未注册: {tool_name}")
+                    await state_machine.trigger(Event.ERROR, {"error": f"工具未注册: {tool_name}"})
+                    return
+
+                # 执行工具，传递 llm 参数（某些工具需要）
+                logger.warning(f"🛠️ [真实执行者] 开始执行工具: {tool_name}")
+                # 过滤掉空字符串值
+                filtered_params = {k: v for k, v in tool_params.items() if v}
+                if not filtered_params:
+                    logger.warning(f"🛠️ 工具 {tool_name} 参数为空，使用默认值")
+                    filtered_params = tool_params  # 仍传递原始参数，但日志警告
+                # 合并参数，添加 llm 实例
+                all_params = {**filtered_params, "llm": llm_deepseek}
+                tool_result = registry.execute_tool(tool_name, **all_params)
+                logger.warning(f"🛠️ [真实执行者] 工具执行完毕，结果: {str(tool_result)[:100]}...")
+
+                # 更新上下文
+                context["tool_result"] = tool_result
+
+                # 记录到工具结果列表
+                if "tool_results" not in context:
+                    context["tool_results"] = []
+
+                context["tool_results"].append({
+                    "tool_name": tool_name,
+                    "params": tool_params,
+                    "tool_result": tool_result,
+                    "decision": context.get("last_decision", {})
+                })
+
+                # 触发 TOOL_RETURN 事件，回到 THINK
+                await state_machine.trigger(Event.TOOL_RETURN, context)
+
+            except Exception as e:
+                logger.error(f"🛠️ [真实执行者] 工具执行异常: {e}")
+                await state_machine.trigger(Event.ERROR, {"error": f"工具执行异常: {e}"})
 
     return action_do_tool
 

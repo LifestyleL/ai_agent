@@ -106,13 +106,13 @@ class YumeDriver:
 
         # 创建协作管理器（千问+DeepSeek双模型）
         self.collaborator = create_collaborator()
-        # 注入内存上下文（零I/O）
-        self.collaborator.set_memory_context(
-            personality=self.mem_personality,
-            long_term=self.mem_long_term,
-            mood_template=self.mem_mood_template,
-            short_term_history=self.short_term_history
-        )
+        # 注入内存上下文（零I/O）[Phase 3.1] 已被状态机接管，注释掉
+        # self.collaborator.set_memory_context(
+        #     personality=self.mem_personality,
+        #     long_term=self.mem_long_term,
+        #     mood_template=self.mem_mood_template,
+        #     short_term_history=self.short_term_history
+        # )
 
         # --- 初始化 V3.0 长期记忆与深度记忆 ---
         # 注意：deepseek_client 是协作管理器中的 DeepSeek 模型实例
@@ -314,20 +314,20 @@ class YumeDriver:
 
         # 将 recall_injection 注入到系统提示词中
         if recall_injection:
-            # 注入到 collaborator 的长期记忆上下文中
-            original_long_term = self.collaborator.mem_long_term if hasattr(self.collaborator, 'mem_long_term') else ""
-            enhanced_long_term = f"{original_long_term}\n{recall_injection}" if original_long_term else recall_injection
-            # 更新 collaborator 的内存上下文
-            if hasattr(self.collaborator, 'mem_long_term'):
-                self.collaborator.mem_long_term = enhanced_long_term
-            elif hasattr(self.collaborator, 'set_memory_context'):
-                # 如果 mem_long_term 不是公共属性，使用 set_memory_context
-                self.collaborator.set_memory_context(
-                    personality=self.mem_personality,
-                    long_term=enhanced_long_term,
-                    mood_template=self.mem_mood_template,
-                    short_term_history=self.short_term_history
-                )
+            # 注入到 collaborator 的长期记忆上下文中 [Phase 3.1] 已被状态机接管，注释掉
+            # original_long_term = self.collaborator.mem_long_term if hasattr(self.collaborator, 'mem_long_term') else ""
+            # enhanced_long_term = f"{original_long_term}\n{recall_injection}" if original_long_term else recall_injection
+            # # 更新 collaborator 的内存上下文
+            # if hasattr(self.collaborator, 'mem_long_term'):
+            #     self.collaborator.mem_long_term = enhanced_long_term
+            # elif hasattr(self.collaborator, 'set_memory_context'):
+            #     # 如果 mem_long_term 不是公共属性，使用 set_memory_context
+            #     self.collaborator.set_memory_context(
+            #         personality=self.mem_personality,
+            #         long_term=enhanced_long_term,
+            #         mood_template=self.mem_mood_template,
+            #         short_term_history=self.short_term_history
+            #     )
             print(f"[深度回忆] 已注入 {recall_count} 条潜意识碎片到系统提示词")
 
         # 1. 刷新时间戳 → 打断独白倒计时
@@ -357,6 +357,26 @@ class YumeDriver:
                 text=text,
                 timestamp=time.time()
             )
+
+            # [Phase 3.1] 状态机接管：触发状态机处理用户输入
+            if hasattr(self, 'state_machine') and self.state_machine:
+                try:
+                    from backend.core.state_machine.state_machine import Event
+                    import asyncio
+                    # 尝试获取当前事件循环
+                    try:
+                        loop = asyncio.get_event_loop()
+                    except RuntimeError:
+                        # 如果没有循环，创建一个新的
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                    # 异步触发状态机
+                    asyncio.create_task(self.state_machine.trigger(Event.USER_INPUT, {"user_input": text}))
+                    print("[状态机] 已触发 USER_INPUT 事件")
+                except Exception as e:
+                    print(f"[WARN] 状态机触发失败: {e}")
+            else:
+                print("[WARN] 状态机未挂载，无法接管用户输入")
 
             # 🌟 3. 调用协作管理器进行双模型协作思考
             # 发布思考开始事件
@@ -397,20 +417,20 @@ class YumeDriver:
                             memory_lines.append("  （此刻你的心境与此记忆产生了共鸣...）")
                         deep_memories_text = "\n".join(memory_lines)
 
-                        # 注入到 collaborator 的长期记忆上下文中
-                        original_long_term = self.collaborator.mem_long_term if hasattr(self.collaborator, 'mem_long_term') else ""
-                        enhanced_long_term = f"{original_long_term}\n\n{deep_memories_text}" if original_long_term else deep_memories_text
-                        # 更新 collaborator 的内存上下文
-                        if hasattr(self.collaborator, 'mem_long_term'):
-                            self.collaborator.mem_long_term = enhanced_long_term
-                        elif hasattr(self.collaborator, 'set_memory_context'):
-                            # 如果 mem_long_term 不是公共属性，使用 set_memory_context
-                            self.collaborator.set_memory_context(
-                                personality=self.mem_personality,
-                                long_term=enhanced_long_term,
-                                mood_template=self.mem_mood_template,
-                                short_term_history=self.short_term_history
-                            )
+                        # 注入到 collaborator 的长期记忆上下文中 [Phase 3.1] 已被状态机接管，注释掉
+                        # original_long_term = self.collaborator.mem_long_term if hasattr(self.collaborator, 'mem_long_term') else ""
+                        # enhanced_long_term = f"{original_long_term}\n\n{deep_memories_text}" if original_long_term else deep_memories_text
+                        # # 更新 collaborator 的内存上下文
+                        # if hasattr(self.collaborator, 'mem_long_term'):
+                        #     self.collaborator.mem_long_term = enhanced_long_term
+                        # elif hasattr(self.collaborator, 'set_memory_context'):
+                        #     # 如果 mem_long_term 不是公共属性，使用 set_memory_context
+                        #     self.collaborator.set_memory_context(
+                        #         personality=self.mem_personality,
+                        #         long_term=enhanced_long_term,
+                        #         mood_template=self.mem_mood_template,
+                        #         short_term_history=self.short_term_history
+                        #     )
                         print(f"[DeepMemory] 注入 {len(retrieved_memories)} 条深层回忆")
                     else:
                         print("[DeepMemory] 未触发深层回忆检索")
@@ -419,15 +439,15 @@ class YumeDriver:
             except Exception as e:
                 print(f"[DeepMemory] 深层回忆检索失败: {e}")
 
-            # 流式消费：实现边出字边说话（文字入队，TTS后台合成）
+            # 流式消费：实现边出字边说话（文字入队，TTS后台合成）[Phase 3.1] 已被状态机接管，注释掉
             full_text_received = ""
-            for chunk_data in self.collaborator.collaborate_stream(text):
-                # 使用新的流式处理方法（只入队，不等待）
-                should_break, full_text_received = self._process_stream_chunk(
-                    chunk_data, full_text_received, text
-                )
-                if should_break:
-                    break
+            # for chunk_data in self.collaborator.collaborate_stream(text):
+            #     # 使用新的流式处理方法（只入队，不等待）
+            #     should_break, full_text_received = self._process_stream_chunk(
+            #         chunk_data, full_text_received, text
+            #     )
+            #     if should_break:
+            #         break
 
             # 异步落盘：保存用户输入和AI回复到短期记忆（不阻塞主链路）
             if full_text_received.strip():
@@ -497,13 +517,13 @@ class YumeDriver:
                         # 保持短期历史记录长度限制
                         if len(self.short_term_history) > self.max_history_tokens * 2:  # 粗略估计
                             self.short_term_history = self.short_term_history[-self.max_history_tokens:]
-                        # 更新 collaborator 上下文
-                        self.collaborator.set_memory_context(
-                            personality=self.mem_personality,
-                            long_term=self.mem_long_term,
-                            mood_template=self.mem_mood_template,
-                            short_term_history=self.short_term_history
-                        )
+                        # 更新 collaborator 上下文 [Phase 3.1] 已被状态机接管，注释掉
+                        # self.collaborator.set_memory_context(
+                        #     personality=self.mem_personality,
+                        #     long_term=self.mem_long_term,
+                        #     mood_template=self.mem_mood_template,
+                        #     short_term_history=self.short_term_history
+                        # )
 
                         # 4. 触发长期记忆存储（内部会检查入库条件）
                         # 需要补充 scene_type 到 current_emotion 字典中

@@ -16,7 +16,7 @@ from core.state_machine.state_machine import get_state_machine, State, Event
 from core.state_machine.transitions import setup_base_transitions
 from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
 from backend.plugins.registry import get_global_registry
-from backend.plugins.builtin.adapters import SearchMemoryAdapter, WriteFileAdapter
+from backend.plugins.builtin.adapters import SearchMemoryAdapter, WriteFileAdapter, ReadFileAdapter, SummarizeArchiveAdapter, WriteDiaryAdapter
 
 ws_instance = WSServer()
 
@@ -46,6 +46,9 @@ async def main():
         reg = get_global_registry()
         reg.register(SearchMemoryAdapter())
         reg.register(WriteFileAdapter())
+        reg.register(ReadFileAdapter())
+        reg.register(SummarizeArchiveAdapter())
+        reg.register(WriteDiaryAdapter())
         # 将注册中心实例挂载到 driver 上（备用）
         driver.tool_registry = reg
         print(f"[Main] 工具注册完成，已注册 {len(reg.get_all_tools())} 个工具")

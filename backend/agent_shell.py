@@ -255,7 +255,7 @@ class AgentShell:
             "state_machine": self.state_machine.get_state_summary(),
             "plugins": self.plugin_manager.get_all_status(),
             "memory": {
-                "short_term_count": len(self.memory_core.get_short_term_memory()),
+                "short_term_count": self.memory_core.get_short_term_count(),
                 "emotion": self.memory_core.get_current_emotion(),
             },
         }

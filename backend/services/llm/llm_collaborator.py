@@ -1,4 +1,8 @@
 """
+[Phase 3.1 废弃标记]
+本模块的同步协作逻辑已被 backend/core/state_machine/actions.py 中的微观 Action 替代。
+保留文件仅供参考，请勿在新代码中引用。
+
 LLM协作管理器：实现DeepSeek（工具调用）和千问（人设对话）的双模型协作
 """
 
