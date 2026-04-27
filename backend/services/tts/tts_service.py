@@ -37,6 +37,9 @@ class TTSService:
         # 🌟 设置API密钥
         dashscope.api_key = current_key
 
+        # 初始化连接状态
+        self._is_connected = False
+
         # 🌟 初始化时就建好长连接，全局复用
         self._init_realtime_tts()
 
@@ -50,23 +53,8 @@ class TTSService:
 
         self._initialized = True
 
-        # 注册退出清理函数
+        # 注册退出清理函数（atexit 兜底）
         atexit.register(self._cleanup)
-        # 注册信号处理（针对Ctrl+C）- 仅在主线程中执行
-        if threading.current_thread() == threading.main_thread():
-            signal.signal(signal.SIGINT, self._signal_handler)
-            signal.signal(signal.SIGTERM, self._signal_handler)
-        else:
-            print("[INFO] [TTS] 在后台线程中初始化，跳过信号处理注册")
-
-    def _signal_handler(self, signum, frame):
-        """处理退出信号"""
-        print(f"\n[WARN]  [TTS] 收到退出信号 {signum}, 正在清理连接...")
-        self._cleanup()
-        # 恢复默认信号处理
-        signal.signal(signum, signal.SIG_DFL)
-        # 不立即退出，让程序正常结束
-        print(f"[OK] [TTS] 清理完成，程序将退出")
 
     def _start_heartbeat(self):
         """启动心跳保活线程"""
@@ -158,17 +146,22 @@ class TTSService:
         # 音频数据和错误信息现在由回调类管理
 
         class ReusableCallback(QwenTtsRealtimeCallback):
-            def __init__(self):
+            def __init__(self, outer_self):
                 super().__init__()
+                self.outer_self = outer_self
                 self.complete_event = threading.Event()
                 self._audio_chunks = []
                 self._error_msg = None
 
             def on_open(self) -> None:
                 print("[TTS] WebSocket连接已建立")
+                # 更新外部实例的连接状态
+                self.outer_self._is_connected = True
 
             def on_close(self, close_status_code, close_msg) -> None:
                 print(f"[TTS] 连接关闭 code={close_status_code}, msg={close_msg}")
+                # 更新外部实例的连接状态
+                self.outer_self._is_connected = False
                 # 无论正常关闭还是异常关闭都释放等待
                 self.complete_event.set()
 
@@ -210,7 +203,7 @@ class TTSService:
                 self._error_msg = None
                 self.complete_event.clear()
 
-        self._callback = ReusableCallback()
+        self._callback = ReusableCallback(self)
 
         # 在创建实例前确保API密钥已设置（与成功测试程序一致）
         dashscope.api_key = TTSConfig.API_KEY
@@ -382,30 +375,6 @@ class TTSService:
             return all_audio, mouth_frames
             
         finally:
-            # 🌟 6. 无论成功失败，都要释放锁
+            # 无论成功失败，都要释放锁
             self._is_speaking = False
             print(f"[DEBUG] [TTS] 释放锁，合成完成")
-
-    async def speak_to_live2d(self, text, live2d_manager, emotion="neutral"):
-        if not text or not text.strip():
-            return False
-
-        print(f"[SPEAK] [TTS] 开始生成: {text[:20]}... (情绪: {emotion})")
-        try:
-            pcm_bytes, mouth_frames = self._synthesize_with_retry(text, emotion)
-            if len(pcm_bytes) == 0: return False
-
-            audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
-            duration = len(pcm_bytes) / 2 / 24000  # 记得改成 24000
-            print(f"[DATA] [TTS] PCM: {len(pcm_bytes)} bytes, {duration:.2f}秒, 口型: {len(mouth_frames)}帧")
-
-            if live2d_manager and hasattr(live2d_manager, 'send_tts'):
-                # 延迟诊断：第一句音频发送到 Live2D 时间戳
-                send_to_live2d_time = time.time() * 1000  # 毫秒
-                print(f"[延迟诊断] 第一句音频发送到 Live2D 时间戳: {send_to_live2d_time:.2f} ms (文本: '{text[:30]}...')")
-                live2d_manager.send_tts(audio_b64, mouth_frames)
-                return True
-            return False
-        except Exception as e:
-            print(f"[ERROR] TTS生成失败: {e}")
-            return False

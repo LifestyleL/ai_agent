@@ -122,9 +122,9 @@ def validate_config():
     if not DEEPSEEK_API_KEY:
         missing_keys.append("DEEPSEEK_API_KEY")
 
-    # 检查千问配置
-    if not QWEN_API_KEY:
-        missing_keys.append("QWEN_API_KEY")
+    # 千问已废弃，不再强制要求
+    if QWEN_API_KEY:
+        print("[Config] Qwen API 已配置（已废弃，系统使用 DeepSeek 单模型）")
 
     # 检查TTS配置
     if not DASHSCOPE_API_KEY:
@@ -136,13 +136,10 @@ def validate_config():
             "请在.env文件中设置这些变量，或设置对应的环境变量。\n"
             "示例.env文件内容:\n"
             "DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-            "QWEN_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
             "DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
             "\n可选配置（可使用默认值）:\n"
             "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1\n"
             "DEEPSEEK_MODEL=deepseek-chat\n"
-            "QWEN_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1\n"
-            "QWEN_MODEL=qwen-max\n"
             "TTS_MODEL=qwen3-tts-vd-realtime-2026-01-15\n"
             "TTS_VOICE=qwen-tts-vd-live2d_girl-voice-20260413174053978-a5da\n"
             "TTS_BASE_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
@@ -151,7 +148,6 @@ def validate_config():
     # 检查API密钥格式
     for key_name, key_value in [
         ("DEEPSEEK_API_KEY", DEEPSEEK_API_KEY),
-        ("QWEN_API_KEY", QWEN_API_KEY),
         ("DASHSCOPE_API_KEY", DASHSCOPE_API_KEY)
     ]:
         if key_value and not key_value.startswith("sk-"):

@@ -2,7 +2,9 @@
 import asyncio
 import sys
 import os
+import signal
 import threading
+import time
 
 # 确保项目根目录在sys.path中，以便使用绝对导入
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -11,16 +13,26 @@ if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
 
 from api.netwebsocket.ws_server import WSServer
-from config import WS_PORT
+from config import WS_PORT, validate_config, DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL, DEEPSEEK_MODEL
 from core.state_machine.state_machine import get_state_machine, State, Event
 from core.state_machine.transitions import setup_base_transitions
 from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
 from backend.plugins.registry import get_global_registry
+from core.llm.llm_api import LLMAPI
 from backend.plugins.builtin.adapters import SearchMemoryAdapter, WriteFileAdapter, ReadFileAdapter, SummarizeArchiveAdapter, WriteDiaryAdapter
 
 ws_instance = WSServer()
+_shutdown_requested = False
 
 async def main():
+    global _shutdown_requested
+
+    # 启动时验证配置
+    validate_config()
+
+    # 统一创建 LLM API 实例（单模型 DeepSeek，状态机 Action 注入使用）
+    llm_deepseek = LLMAPI(api_key=DEEPSEEK_API_KEY, base_url=DEEPSEEK_BASE_URL, model=DEEPSEEK_MODEL)
+
     print("="*50)
     print("[1] [主线程] 准备拉起 Agent 后台线程...")
     print("="*50)
@@ -28,13 +40,6 @@ async def main():
         from core.agent.agent_driver import YumeDriver
         driver = YumeDriver()
         ws_instance.driver = driver
-        # 将driver的live2d实例挂载到ws_instance，确保引用一致
-        ws_instance.live2d = driver.live2d
-        print(f"[Main] Live2D管理器已挂载到ws_instance")
-        # 启动Live2D管理器
-        if ws_instance.live2d:
-            ws_instance.live2d.start()
-            print(f"[Main] Live2D管理器已启动")
 
         # 配置状态机转移规则和Action（真实引擎模式）
         print("[Main] 配置状态机（真实引擎模式）...")
@@ -55,8 +60,8 @@ async def main():
 
         # 绑定真实 Action 引擎
         print("[Main] 绑定真实 Action 引擎...")
-        real_think = create_real_think_action(state_machine=sm, registry=reg, driver_instance=driver)
-        real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg)
+        real_think = create_real_think_action(state_machine=sm, registry=reg, driver_instance=driver, llm_deepseek=llm_deepseek)
+        real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg, llm_deepseek=llm_deepseek)
         sm.register_action(State.THINK, real_think)
         sm.register_action(State.DO_TOOL, real_do_tool)
         print("[Main] 真实 Action 绑定完成")
@@ -68,11 +73,8 @@ async def main():
         # 调试：打印状态机转移规则
         print(f"[Main] 状态机ID: {id(sm)}")
         print(f"[Main] 状态机transitions数量: {len(sm._transitions)}")
-        for key, to_state in sm._transitions.items():
-            # 解析字符串键: "IDLE:USER_INPUT"
-            from_state_value, event_value = key.split(':')
-            # 需要从值映射回枚举，简单起见直接打印原始值
-            print(f"[Main] 转移: {from_state_value} + {event_value} -> {to_state.name}")
+        for (from_sv, ev), to_state in sm._transitions.items():
+            print(f"[Main] 转移: {from_sv} + {ev} -> {to_state.name}")
 
         print("="*50)
         print("[2] [主线程] 启动 Agent 独白守护...")
@@ -86,13 +88,15 @@ async def main():
     loop = asyncio.get_running_loop()
 
     # [FIX] 终端输入线程
+    stdin_stop = threading.Event()
+
     def stdin_loop():
         print()
         print("[CHAT] ================================")
         print("[CHAT]   在这里直接打字按回车即可对话")
         print("[CHAT] ================================")
         print()
-        while True:
+        while not stdin_stop.is_set():
             try:
                 text = input("user：")
                 if text.strip():
@@ -126,8 +130,51 @@ async def main():
 
     threading.Thread(target=stdin_loop, daemon=True).start()
 
+    # ─── 信号处理：一次 Ctrl+C 优雅退出 ───
+    shutdown_event = asyncio.Event()
 
-    await server.wait_closed()
+    def _on_signal(signum, frame):
+        global _shutdown_requested
+        if _shutdown_requested:
+            return
+        _shutdown_requested = True
+        print("\n[STOP] 收到退出信号，正在优雅关闭...")
+        loop.call_soon_threadsafe(shutdown_event.set)
+
+    # 注册信号（TTS 的 signal handler 已在子线程中注册，这里只在主线程生效）
+    try:
+        signal.signal(signal.SIGINT, _on_signal)
+        signal.signal(signal.SIGTERM, _on_signal)
+    except ValueError:
+        pass  # 非主线程时忽略
+
+    # 等待关闭信号或服务结束
+    await shutdown_event.wait()
+
+    # ─── 优雅关闭流程（每步带超时，防止卡死） ───
+    print("[STOP] 正在关闭 WebSocket 服务...")
+    try:
+        server.close()
+        await asyncio.wait_for(server.wait_closed(), timeout=3)
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"[STOP] WebSocket 关闭: {e}")
+
+    print("[STOP] 正在停止终端输入...")
+    stdin_stop.set()
+
+    print("[STOP] 正在停止 Agent...")
+    try:
+        await asyncio.wait_for(asyncio.to_thread(driver.shutdown), timeout=8)
+    except (asyncio.TimeoutError, Exception) as e:
+        print(f"[STOP] Agent 停止: {e}")
+
+    # 取消所有待处理任务（不带 gather，直接 cancel）
+    tasks = [t for t in asyncio.all_tasks(loop) if t is not asyncio.current_task()]
+    for t in tasks:
+        t.cancel()
+    # 不 await gather：被 cancel 的 task 可能挂，直接放过
+
+    print("[OK] 系统已关闭")
 
 if __name__ == "__main__":
     try:

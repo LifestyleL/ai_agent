@@ -20,7 +20,7 @@ def main():
         with open(env_path, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        required_keys = ["DEEPSEEK_API_KEY", "QWEN_API_KEY", "DASHSCOPE_API_KEY"]
+        required_keys = ["DEEPSEEK_API_KEY", "DASHSCOPE_API_KEY"]
         for key in required_keys:
             if f"{key}=" in content:
                 # 提取值
@@ -54,9 +54,6 @@ def main():
         ("DeepSeek", "DEEPSEEK_API_KEY", config.DEEPSEEK_API_KEY),
         ("DeepSeek", "DEEPSEEK_BASE_URL", config.DEEPSEEK_BASE_URL),
         ("DeepSeek", "DEEPSEEK_MODEL", config.DEEPSEEK_MODEL),
-        ("千问", "QWEN_API_KEY", config.QWEN_API_KEY),
-        ("千问", "QWEN_BASE_URL", config.QWEN_BASE_URL),
-        ("千问", "QWEN_MODEL", config.QWEN_MODEL),
         ("TTS", "DASHSCOPE_API_KEY", config.DASHSCOPE_API_KEY),
         ("TTS", "TTS_MODEL", config.TTS_MODEL),
         ("TTS", "TTS_VOICE", config.TTS_VOICE),
@@ -75,7 +72,6 @@ def main():
     print("\n4. 检查API密钥格式...")
     api_keys = [
         ("DeepSeek", config.DEEPSEEK_API_KEY),
-        ("千问", config.QWEN_API_KEY),
         ("TTS", config.DASHSCOPE_API_KEY),
     ]
 
@@ -101,20 +97,23 @@ def main():
     except Exception as e:
         print(f"   ERROR: TTSConfig导入失败: {e}")
 
-    # 6. 检查LLM协作管理器
-    print("\n6. 检查LLM协作管理器...")
+    # 6. 检查 LLM API 连接
+    print("\n6. 检查 LLM API...")
     try:
-        from llm_collaborator import create_collaborator
-        print("   OK: create_collaborator导入成功")
+        from core.llm.llm_api import LLMAPI
+        print("   OK: LLMAPI 导入成功")
 
-        # 尝试创建实例（不实际连接API）
         try:
-            collaborator = create_collaborator()
-            print("   OK: 协作管理器实例创建成功")
+            llm = LLMAPI(
+                api_key=config.DEEPSEEK_API_KEY,
+                base_url=config.DEEPSEEK_BASE_URL,
+                model=config.DEEPSEEK_MODEL
+            )
+            print("   OK: LLMAPI 实例创建成功（单模型 DeepSeek）")
         except Exception as e:
-            print(f"   ERROR: 创建协作管理器失败: {e}")
+            print(f"   ERROR: 创建 LLM 实例失败: {e}")
     except Exception as e:
-        print(f"   ERROR: 导入create_collaborator失败: {e}")
+        print(f"   ERROR: 导入 LLMAPI 失败: {e}")
 
     # 总结
     print("\n=== 检查完成 ===")

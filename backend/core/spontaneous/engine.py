@@ -18,20 +18,17 @@ from .interrupt_handler import InterruptHandler, InterruptType
 
 from ..memory.memory_core import MemoryCore
 from ..event.event_bus import event_bus, EventType, Event, event_handler
-from services.llm.llm_collaborator import create_collaborator
-
-
 class SpontaneousEngine:
     """自驱动引擎主类"""
 
-    def __init__(self, memory_core: MemoryCore, llm_collaborator=None):
+    def __init__(self, memory_core: MemoryCore, llm=None):
         self.memory_core = memory_core
-        self.llm_collaborator = llm_collaborator or create_collaborator()
+        self.llm = llm
 
         # 初始化组件
         self.context_reader = ContextReader(memory_core)
         self.trigger_policy = TriggerPolicy()
-        self.content_generator = ContentGenerator(self.llm_collaborator)
+        self.content_generator = ContentGenerator(llm)
         self.freq_limiter = FreqLimiter()
         self.response_tracker = ResponseTracker()
         self.interrupt_handler = InterruptHandler()
@@ -244,7 +241,7 @@ class SpontaneousEngine:
 
         # 4. 生成内容
         use_llm = trigger_result["priority"] >= 4  # 高优先级使用LLM
-        content_result = self.content_generator.generate(
+        content_result = await self.content_generator.generate(
             {**context, "trigger_info": trigger_result},
             use_llm=use_llm
         )
@@ -321,7 +318,7 @@ class SpontaneousEngine:
             "details": {"consecutive": True}
         }
 
-        content_result = self.content_generator.generate(
+        content_result = await self.content_generator.generate(
             {**context, "trigger_info": trigger_result},
             use_llm=use_llm
         )
@@ -453,10 +450,10 @@ class SpontaneousEngine:
 
         # 跳过频率限制检查（因为是手动触发）
         # 生成内容
-        content_result = self.content_generator.generate(
+        content_result = asyncio.run(self.content_generator.generate(
             {**context, "trigger_info": trigger_result},
             use_llm=True
-        )
+        ))
 
         if not content_result["text"]:
             print("[SpontaneousEngine] 手动触发内容生成失败")

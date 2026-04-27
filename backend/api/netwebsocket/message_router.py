@@ -6,6 +6,7 @@ WebSocket 消息路由器
 import json
 import logging
 import asyncio
+import base64
 from typing import Dict, Any, Optional, Tuple
 from core.state_machine.state_machine import Event
 
@@ -18,14 +19,16 @@ class MessageRouter:
     负责解析 JSON-RPC 2.0 格式消息，并根据通道进行分发
     """
 
-    def __init__(self, ws_server):
+    def __init__(self, ws_server, loop=None):
         """
         初始化路由器
 
         Args:
             ws_server: WebSocket 服务器实例，用于访问驱动器和相关服务
+            loop: 事件循环实例，用于异步操作。如果为None，将尝试获取当前循环
         """
         self.ws_server = ws_server
+        self.loop = loop or asyncio.get_event_loop()
         self._initialized = False
         self._initialize_handlers()
 
@@ -189,27 +192,53 @@ class MessageRouter:
             logger.debug(f"动画通道收到消息: {params}")
             return False
 
-    def _handle_audio_channel(self, parsed_message: Dict[str, Any], websocket):
+    def _handle_audio_channel(self, parsed_message: Dict[str, Any], websocket) -> bool:
         """
         处理音频通道消息
         对应旧逻辑中的 TTS_TEST 类型消息
         """
         params = parsed_message.get("params", {})
 
-        # 直接调用现有的 TTS 测试逻辑
+        # 处理 TTS 测试请求
         if params.get("type") == "TTS_TEST":
             text = params.get("text", "").strip()
+            emotion = params.get("emotion", "neutral")
             if not text or self.ws_server.tts is None:
                 print("[WAIT] TTS 还在初始化，稍后再试")
-                return
+                return False
 
-            # 这里需要异步执行，但为了保持与旧逻辑一致，先记录
             print(f"[TTS_TEST] 收到音频测试请求: {text[:50]}...")
-            # 实际处理将由 ws_server._handle_client 中的逻辑执行
-            # 由于我们是在原有逻辑之前路由，这里只记录，实际处理仍由旧逻辑完成
-            pass
+
+            # 异步执行 TTS 合成（避免阻塞消息循环）
+            async def synthesize_and_send():
+                try:
+                    # 在后台线程中执行阻塞的 TTS 合成
+                    loop = asyncio.get_running_loop()
+                    pcm_bytes, mouth_frames = await loop.run_in_executor(
+                        None, self.ws_server.tts._synthesize_with_retry, text, emotion
+                    )
+                    if len(pcm_bytes) == 0:
+                        return
+                    # 编码为 base64
+                    audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
+                    # 过滤无效口型帧
+                    visemes = [f for f in mouth_frames if f['v'] > 0.01 or f == mouth_frames[0]]
+                    # 发送 TTS_AUDIO 消息到前端
+                    await self.ws_server._send({
+                        "type": "TTS_AUDIO",
+                        "audio_base64": audio_b64,
+                        "visemes": visemes
+                    })
+                    print(f"[OK] [TTS_TEST] 音频合成完成并已发送")
+                except Exception as e:
+                    print(f"[ERROR] [TTS_TEST] 处理失败: {e}")
+
+            # 启动后台任务
+            self.loop.create_task(synthesize_and_send())
+            return True
         else:
             logger.debug(f"音频通道收到消息: {params}")
+            return False
 
     def _handle_control_channel(self, parsed_message: Dict[str, Any], websocket) -> bool:
         """
@@ -225,7 +254,7 @@ class MessageRouter:
         if params.get("signal") is not None:
             try:
                 print(f"[SIGNAL] 收到信号: {params['signal']}")
-                # 直接调用现有的信号处理逻辑
+                # 确保driver存在并已配置状态机
                 if self.ws_server.driver is None:
                     from core.agent.agent_driver import YumeDriver
                     self.ws_server.driver = YumeDriver()
@@ -233,12 +262,12 @@ class MessageRouter:
                     if hasattr(self.ws_server, '_setup_driver_state_machine'):
                         self.ws_server._setup_driver_state_machine(self.ws_server.driver)
                     else:
-                        # 降级：直接调用原有逻辑
-                        import threading
-                        threading.Thread(target=self.ws_server.driver.handle_user_input, args=("",), daemon=True).start()
-                        return True
+                        # 如果ws_server没有配置方法，则使用默认状态机（已在main.py中配置）
+                        pass
                 # 使用状态机触发用户输入事件（空字符串表示信号）
-                asyncio.create_task(self.ws_server.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": ""}))
+                self.loop.create_task(
+                    self.ws_server.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": ""})
+                )
                 return True
             except Exception as e:
                 logger.error(f"信号处理失败: {e}")
@@ -255,13 +284,13 @@ class MessageRouter:
                     if hasattr(self.ws_server, '_setup_driver_state_machine'):
                         self.ws_server._setup_driver_state_machine(self.ws_server.driver)
                     else:
-                        # 降级：直接调用原有逻辑
-                        import threading
-                        threading.Thread(target=self.ws_server.driver.handle_user_input, args=(text,), daemon=True).start()
-                        return True
+                        # 如果ws_server没有配置方法，则使用默认状态机
+                        pass
                 print(f"[消息] [WS] 收到用户输入: {text[:30]}...")
                 # 使用状态机触发用户输入事件
-                asyncio.create_task(self.ws_server.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text}))
+                self.loop.create_task(
+                    self.ws_server.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text})
+                )
                 return True
             except Exception as e:
                 logger.error(f"用户输入处理失败: {e}")
@@ -272,6 +301,6 @@ class MessageRouter:
 
 
 # 工具函数：创建路由器实例
-def create_router(ws_server):
+def create_router(ws_server, loop=None):
     """创建消息路由器实例"""
-    return MessageRouter(ws_server)
+    return MessageRouter(ws_server, loop)

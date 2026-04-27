@@ -38,6 +38,47 @@ export class LAppAIWebSocket {
       // 身体轻微歪转
     };
 
+    // 高层指令队列（由 LAppModel.update() 消费）
+    public expressionQueue: string[] = [];
+    public motionQueue: Array<{ group: string; no?: number }> = [];
+
+    // 情绪→表达式映射
+    private static readonly EMOTION_EXPRESSION_MAP: Record<string, string> = {
+      happy: 'F01',
+      sad: 'F04',
+      angry: 'F03',
+      fear: 'F02',
+      gentle: 'F01',
+      serious: 'F05',
+      neutral: 'F01',
+    };
+
+    private _handleCommand(d: any): void {
+      if (d.cmd === 'emotion') {
+        const expId =
+          LAppAIWebSocket.EMOTION_EXPRESSION_MAP[d.emotion] || 'F01';
+        this.expressionQueue.push(expId);
+        // 根据情绪微调身体姿态
+        const s = d.strength || 0.5;
+        switch (d.emotion) {
+          case 'sad':
+            this.aiFaceParams.ParamBodyAngleY = -3.0 * s;
+            break;
+          case 'angry':
+            this.aiFaceParams.ParamBodyAngleX = 2.0 * s;
+            break;
+          case 'happy':
+            this.aiFaceParams.ParamBodyAngleX = 1.0 * s;
+            break;
+          default:
+            this.aiFaceParams.ParamBodyAngleX = 0;
+            this.aiFaceParams.ParamBodyAngleY = 0;
+        }
+      } else if (d.cmd === 'motion') {
+        this.motionQueue.push({ group: d.motion || 'idle' });
+      }
+    }
+
   public static getInstance(): LAppAIWebSocket {
     if (!this._instance) this._instance = new LAppAIWebSocket();
     return this._instance;
@@ -76,8 +117,13 @@ export class LAppAIWebSocket {
 
       // 如果是音频指令，转交给全局的音频管理器
       if (d.type === "TTS_AUDIO") {
-        // console.log("[AI_WS] 处理 TTS_AUDIO 消息");
         LAppAudioManager.getInstance().playTTS(d.audio_base64, d.visemes);
+        return;
+      }
+
+      // 如果是高层 Live2D 指令
+      if (d.type === "LIVE2D_CMD") {
+        this._handleCommand(d);
         return;
       }
 

@@ -3,17 +3,24 @@
 """
 
 import random
-import time
 from typing import Dict, Any, Optional
 from datetime import datetime
-from services.llm.llm_collaborator import create_collaborator
+from core.llm.llm_api import LLMAPI
+import config
 
 
 class ContentGenerator:
     """生成主动发言的内容"""
 
-    def __init__(self, llm_collaborator=None):
-        self.llm = llm_collaborator or create_collaborator()
+    def __init__(self, llm=None):
+        if llm is None:
+            self.llm = LLMAPI(
+                api_key=config.DEEPSEEK_API_KEY,
+                base_url=config.DEEPSEEK_BASE_URL,
+                model=config.DEEPSEEK_MODEL
+            )
+        else:
+            self.llm = llm
         self.last_topics = []  # 最近使用的话题，避免重复
         self.topic_weights = {}  # 话题权重（基于用户反馈）
 
@@ -158,23 +165,15 @@ class ContentGenerator:
 
         return selected
 
-    def generate_from_llm(self, context: Dict[str, Any]) -> Optional[str]:
+    async def generate_from_llm(self, context: Dict[str, Any]) -> Optional[str]:
         """使用LLM生成更智能的内容（备用方案）"""
         try:
-            # 构建提示词
             prompt = self._build_llm_prompt(context)
-
-            # 使用协作管理器（非流式调用）
-            replies = self.llm.collaborate(prompt)
-
-            if replies and len(replies) > 0:
-                reply_text = replies[-1].get("text", "")
-                if reply_text:
-                    return reply_text
-
+            reply_text = await self.llm.ask_async(prompt)
+            if reply_text:
+                return reply_text.strip()
         except Exception as e:
             print(f"[ContentGenerator] LLM生成失败: {e}")
-
         return None
 
     def _build_llm_prompt(self, context: Dict[str, Any]) -> str:
@@ -209,7 +208,7 @@ class ContentGenerator:
 
         return prompt
 
-    def generate(self, context: Dict[str, Any], use_llm: bool = False) -> Dict[str, Any]:
+    async def generate(self, context: Dict[str, Any], use_llm: bool = False) -> Dict[str, Any]:
         """
         生成主动发言内容
 
@@ -228,7 +227,7 @@ class ContentGenerator:
 
         # 方法1：使用LLM生成（如果启用且优先级高）
         if use_llm and priority >= 4:
-            llm_text = self.generate_from_llm(context)
+            llm_text = await self.generate_from_llm(context)
             if llm_text:
                 return {
                     "text": llm_text,

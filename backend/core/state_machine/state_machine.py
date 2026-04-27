@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Callable, Any, Dict, Optional
+from typing import Callable, Any, Dict, Optional, Tuple
 import logging
 
 class State(Enum):
@@ -21,13 +21,15 @@ class Event(Enum):
     TASK_COMPLETE = "TASK_COMPLETE"
     NEED_TOOL = "NEED_TOOL"
 
+TransitionKey = Tuple[str, str]  # (state_value, event_value) 避免跨模块枚举实例不一致
+
 class StateMachine:
     """标准有限状态机 (FSM)"""
 
     def __init__(self):
         self.current_state: State = State.IDLE
-        self._transitions: Dict[str, State] = {}  # 使用字符串键: f"{from_state.value}:{event.value}" -> State
-        self._actions: Dict[State, Callable] = {}    # State -> Action Func
+        self._transitions: Dict[TransitionKey, State] = {}
+        self._actions: Dict[str, Callable] = {}  # state_value -> Action
         self.logger = logging.getLogger(__name__)
 
         # --- 兼容旧代码的计数器（非核心逻辑，仅作属性挂载） ---
@@ -37,34 +39,28 @@ class StateMachine:
 
     def register_transition(self, from_state: State, event: Event, to_state: State):
         """注册状态转移规则"""
-        # 使用字符串键避免枚举实例不一致问题
-        key = f"{from_state.value}:{event.value}"
+        key = (from_state.value, event.value)
         self._transitions[key] = to_state
-        self.logger.info(f"[FSM] 注册转移: {from_state.name} + {event.name} -> {to_state.name} (key: {key})")
-        self.logger.info(f"[FSM] Register transition: {from_state.name} + {event.name} -> {to_state.name} (key: {key})")
+        self.logger.info(f"[FSM] 注册转移: {from_state.name} + {event.name} -> {to_state.name}")
+        self.logger.info(f"[FSM] Register transition: {from_state.name} + {event.name} -> {to_state.name}")
 
     def register_action(self, state: State, action: Callable):
         """注册进入某状态时执行的 Action"""
-        # 使用字符串键避免枚举实例不一致问题
-        key = state.value
-        print(f"[FSM] 注册 Action: 状态={state.name}(value:{key}), action={action}")
+        print(f"[FSM] 注册 Action: 状态={state.name}, action={action}")
         print(f"[FSM] 当前_actions字典: {list(self._actions.keys())}")
-        self._actions[key] = action
+        self._actions[state.value] = action
 
     async def trigger(self, event: Event, context: Optional[Dict[str, Any]] = None):
         """触发事件，驱动状态机流转"""
         context = context or {}
-        # 使用字符串键避免枚举实例不一致问题
-        key = f"{self.current_state.value}:{event.value}"
+        key = (self.current_state.value, event.value)
 
-        # 强制打印日志，确保可见
-        print(f"[FSM] 触发检查: current_state={self.current_state.name}(value:{self.current_state.value}), event={event.name}(value:{event.value})")
-        print(f"[FSM] 检查键: {key}")
+        print(f"[FSM] 触发检查: current_state={self.current_state.name}, event={event.name}")
+        print(f"[FSM] 检查键: ({self.current_state.name}, {event.name})")
 
         if key not in self._transitions:
-            print(f"[FSM] 错误: 未定义的转移: 当前[{self.current_state.name}] + 事件[{event.name}] (key: {key})")
-            # 打印所有注册的转移
-            transitions_list = [f"({k})" for k in self._transitions.keys()]
+            print(f"[FSM] 错误: 未定义的转移: 当前[{self.current_state.name}] + 事件[{event.name}]")
+            transitions_list = [f"({s}, {e})" for s, e in self._transitions.keys()]
             transitions_str = ", ".join(transitions_list)
             print(f"[FSM] 已注册的转移: {transitions_str}")
             return
@@ -72,23 +68,19 @@ class StateMachine:
         next_state = self._transitions[key]
         print(f"[FSM] 转移: {self.current_state.name} --[{event.name}]--> {next_state.name}")
 
-        # 先更新状态，再执行 Action（这样 Action 内部触发事件时，current_state 已经是新状态）
         old_state = self.current_state
         self.current_state = next_state
         print(f"[FSM] 状态更新为: {self.current_state.name}")
 
         # 执行目标状态的 Action
-        action_key = next_state.value
-        if action_key in self._actions:
+        if next_state.value in self._actions:
             try:
                 print(f"[FSM] 准备执行 Action: {next_state.name}")
-                await self._actions[action_key](context)
+                await self._actions[next_state.value](context)
             except Exception as e:
                 print(f"[FSM] 错误: 执行 Action [{next_state.name}] 出错: {e}")
-                # 可选：发生错误时回滚状态？
-                # self.current_state = old_state
         else:
-            print(f"[FSM] 警告: 状态 {next_state.name}(key:{action_key}) 没有注册 Action")
+            print(f"[FSM] 警告: 状态 {next_state.name} 没有注册 Action")
             print(f"[FSM] 当前_actions字典: {list(self._actions.keys())}")
 
     # --- 以下为兼容旧代码保留的方法 ---

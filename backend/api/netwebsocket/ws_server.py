@@ -4,14 +4,14 @@ import base64
 import threading
 import websockets
 from queue import Queue
-from deprecated.live2d.live2d_manager import Live2DManager
 from .message_router import create_router
 from .json_rpc_builder import JsonRpcBuilder
 from .error_code import ErrorCode
 from config import WS_PORT
 from core.state_machine.state_machine import get_state_machine, State, Event
 from core.state_machine.transitions import setup_base_transitions
-from core.state_machine.actions import create_think_action
+from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
+from backend.plugins.registry import get_global_registry
 class WSServer:
     _instance = None 
     
@@ -28,7 +28,6 @@ class WSServer:
         self.send_queue = Queue()
         self.websocket = None
         self.driver = None
-        self.live2d = None
         self.tts = None
         self._initialized = True
 
@@ -46,103 +45,43 @@ class WSServer:
         threading.Thread(target=init_tts, daemon=True).start()
 
     def _setup_driver_state_machine(self, driver):
-        """配置driver的状态机"""
-        print("[WSServer] 配置driver状态机...")
+        """配置driver的状态机（使用真实Action引擎，与main.py保持一致）"""
+        print("[WSServer] 配置driver状态机（真实引擎）...")
         sm = get_state_machine()
         setup_base_transitions(sm)
-        think_action = create_think_action(
-            driver_instance=driver,
-            state_machine=sm
-        )
-        sm.register_action(State.THINK, think_action)
+        # 获取全局工具注册中心
+        reg = get_global_registry()
+        # 绑定真实 Action 引擎
+        real_think = create_real_think_action(state_machine=sm, registry=reg, driver_instance=driver)
+        real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg)
+        sm.register_action(State.THINK, real_think)
+        sm.register_action(State.DO_TOOL, real_do_tool)
         driver.state_machine = sm
-        print("[WSServer] 状态机配置完成")
+        print("[WSServer] 状态机配置完成（真实引擎）")
 
     async def _handle_client(self, websocket):
         self.websocket = websocket
         print("[PHONE] 前端已连接")
 
-        if self.live2d is None:
-            # Live2DManager already imported at top level
-            self.live2d = Live2DManager()
-            self.live2d.start()
-            print("[LIVE2D] Live2D 动画循环已启动")
-
         asyncio.create_task(self._queue_consumer())
 
-        # 创建消息路由器
-        router = create_router(self)
+        # 创建消息路由器（传递当前事件循环）
+        router = create_router(self, asyncio.get_running_loop())
 
         try:
             async for message in websocket:
-                # 尝试使用新的路由器处理消息
+                # 使用路由器处理消息
                 try:
-                    # 路由器返回 True 表示成功处理，False 表示需要降级到旧逻辑
                     if router.route_message(message, websocket):
                         # 路由器已处理，继续下一条消息
                         continue
+                    else:
+                        # 路由器无法处理的消息（未知通道）
+                        print(f"[WARN] [ROUTER] 无法路由的消息: {message[:200]}")
+                        continue
                 except Exception as router_error:
-                    print(f"[ROUTER] 路由器异常: {router_error}")
-                    # 路由器出错，降级到旧逻辑
-                    pass
-
-                # 降级逻辑：原有的消息处理代码
-                data = json.loads(message)
-
-                # [FIX][FIX][FIX] 终极探针：每条消息都打印原始内容
-                print(f"[PROBE] [探针] 收到原始消息: {message[:200]}")
-
-                data = json.loads(message)
-                msg_type = data.get("type", "无type")
-                msg_text = data.get("text", data.get("content", data.get("message", "无文本")))
-                print(f"[PROBE] [探针] type={msg_type}, text={msg_text}")
-
-                # [FIX] 分支1: 心跳/信号
-                if data.get("signal"):
-                    if self.driver is None:
-                        from core.agent.agent_driver import YumeDriver
-                        self.driver = YumeDriver()
-                        # 配置状态机
-                        self._setup_driver_state_machine(self.driver)
-                    # 使用状态机触发用户输入事件（空字符串表示信号）
-                    asyncio.create_task(self.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": ""}))
-                    continue
-
-                text = data.get("text", "").strip()
-
-                # [FIX] 分支2: TTS 测试
-                if data.get("type") == "TTS_TEST" and text:
-                    if self.tts is None:
-                        print("[WAIT] TTS 还在初始化，稍后再试")
-                        continue
-                    loop = asyncio.get_running_loop()
-                    pcm_bytes, mouth_frames = await loop.run_in_executor(
-                        None, self.tts._synthesize_with_retry, text, data.get("emotion", "neutral")
-                    )
-                    if len(pcm_bytes) == 0:
-                        continue
-                    audio_b64 = base64.b64encode(pcm_bytes).decode("utf-8")
-                    visemes = [f for f in mouth_frames if f['v'] > 0.01 or f == mouth_frames[0]]
-                    await self._send({"type": "TTS_AUDIO", "audio_base64": audio_b64, "visemes": visemes})
-                    continue
-
-                # [FIX][FIX][FIX] 分支3: 用户正常输入（之前这里完全缺失！）
-                if text:
-                    if self.driver is None:
-                        from core.agent.agent_driver import YumeDriver
-                        self.driver = YumeDriver()
-                        # 配置状态机
-                        self._setup_driver_state_machine(self.driver)
-                    print(f"[消息] [WS] 收到用户输入: {text[:30]}...")
-                    # 使用状态机触发用户输入事件
-                    asyncio.create_task(self.driver.state_machine.trigger(Event.USER_INPUT, {"user_input": text}))
-                    continue
-
-                # 分支4: Live2D参数控制
-                if msg_type == "PARAMS" and "data" in data:
-                    print(f"[PARAMS] 收到Live2D参数: {data['data']}")
-                    # 将参数数据（不带type包装）放入队列，让_queue_consumer发送给前端
-                    self.send_queue.put(data['data'])
+                    print(f"[ERROR] [ROUTER] 路由器异常: {router_error}")
+                    # 继续处理下一条消息，不降级
                     continue
 
         except websockets.exceptions.ConnectionClosed:
@@ -152,11 +91,10 @@ class WSServer:
             print(f"[错误] WS异常: {e}")
 
     async def _queue_consumer(self):
+        loop = asyncio.get_running_loop()
         while True:
             try:
-                while self.send_queue.empty():
-                    await asyncio.sleep(0.01)
-                data = self.send_queue.get_nowait()
+                data = await loop.run_in_executor(None, self.send_queue.get)
                 if data.get("type") == "TTS_AUDIO":
                     print("[发送] [WS] 队列成功吐出 TTS 音频包，准备发给前端！")
                 else:

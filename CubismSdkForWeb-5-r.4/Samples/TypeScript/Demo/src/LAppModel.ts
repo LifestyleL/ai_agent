@@ -559,26 +559,76 @@ export class LAppModel extends CubismUserModel {
     // ==========================================
     // 唯一的特例：TTS 嘴型绝对控制
     // ==========================================
+    // AI parameter override (head, body, eyes, arms, command queues)
     const idManager = CubismFramework.getIdManager();
-    const idMouth = idManager.getId("ParamMouthOpenY");
-    
-    // 获取后端传来的嘴型值
-    const target = AI_WS.aiFaceParams;
-    const mouthBackend = (target as Record<string, any>)['ParamMouthOpenY'];
-    
-    // 如果没有 TTS 数据，就闭嘴
+    const target = AI_WS.aiFaceParams as Record<string, any>;
+
+    // Mouth (TTS-driven, fast lerp)
     const isPlayingAudio = LAppAudioManager.getInstance().getIsPlaying();
-    const mouthTarget = (mouthBackend !== undefined && mouthBackend !== null) 
-                        ? mouthBackend 
-                        : (isPlayingAudio ? this._smoothedAI.ParamMouthOpenY : 0);
-    
-    // 极速平滑（嘴巴开合必须跟紧音频）
+    const mb = target["ParamMouthOpenY"];
+    const mouthTarget = mb !== undefined && mb !== null ? mb : (isPlayingAudio ? this._smoothedAI.ParamMouthOpenY : 0);
     const lerpMouth = 1 - Math.exp(-20.0 * dt);
     this._smoothedAI.ParamMouthOpenY += (mouthTarget - this._smoothedAI.ParamMouthOpenY) * lerpMouth;
+    this._model.setParameterValueById(idManager.getId("ParamMouthOpenY"), this._smoothedAI.ParamMouthOpenY);
 
-    // 赋予嘴巴（受 LipSync 保护罩庇护，绝对安全）
-    if (idMouth) {
-      this._model.setParameterValueById(idMouth, this._smoothedAI.ParamMouthOpenY);
+    // Head angles (medium lerp)
+    const lerpHead = 1 - Math.exp(-10.0 * dt);
+    for (const key of ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamHairAhoge"]) {
+      const id = idManager.getId(key);
+      if (!id) continue;
+      const cur = (this._smoothedAI as any)[key] || 0;
+      const tgt = target[key] !== undefined ? target[key] : 0;
+      (this._smoothedAI as any)[key] = cur + (tgt - cur) * lerpHead;
+      this._model.setParameterValueById(id, (this._smoothedAI as any)[key]);
+    }
+
+    // Body angles (slow lerp)
+    const lerpBody = 1 - Math.exp(-5.0 * dt);
+    for (const key of ["ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ"]) {
+      const id = idManager.getId(key);
+      if (!id) continue;
+      const cur = (this._smoothedAI as any)[key] || 0;
+      const tgt = target[key] !== undefined ? target[key] : 0;
+      (this._smoothedAI as any)[key] = cur + (tgt - cur) * lerpBody;
+      this._model.setParameterValueById(id, (this._smoothedAI as any)[key]);
+    }
+
+    // Eye blink (auto-random with AI override)
+    const idEyeL = idManager.getId("ParamEyeLOpen");
+    const idEyeR = idManager.getId("ParamEyeROpen");
+    if (idEyeL && idEyeR) {
+      let blink = 1.0;
+      if (this._blinkTimer > 0) {
+        this._blinkTimer -= dt;
+        blink = Math.sin((1 - this._blinkTimer / this._blinkDuration) * Math.PI);
+      } else if (Math.random() < 0.004) {
+        this._blinkDuration = 0.25;
+        this._blinkTimer = this._blinkDuration;
+      }
+      const eL = target["ParamEyeLOpen"] !== undefined ? target["ParamEyeLOpen"] : blink;
+      const eR = target["ParamEyeROpen"] !== undefined ? target["ParamEyeROpen"] : blink;
+      this._smoothedAI.ParamEyeLOpen = eL;
+      this._smoothedAI.ParamEyeROpen = eR;
+      this._model.setParameterValueById(idEyeL, eL);
+      this._model.setParameterValueById(idEyeR, eR);
+    }
+
+    // Arm params (direct, no smoothing)
+    for (const key of ["ParamArmLA", "ParamArmRA", "ParamArmLB", "ParamArmRB"]) {
+      const id = idManager.getId(key);
+      if (!id) continue;
+      const val = target[key] !== undefined ? target[key] : 1.0;
+      (this._smoothedAI as any)[key] = val;
+      this._model.setParameterValueById(id, val);
+    }
+
+    // Consume command queues from AI_WS
+    if (AI_WS.expressionQueue.length > 0) {
+      this.setExpression(AI_WS.expressionQueue.shift()!);
+    }
+    if (AI_WS.motionQueue.length > 0) {
+      const m = AI_WS.motionQueue.shift()!;
+      this.startRandomMotion(m.group, LAppDefine.PriorityNormal);
     }
 
     this._model.saveParameters();
