@@ -100,6 +100,31 @@ async def main():
             try:
                 text = input("user：")
                 if text.strip():
+                    # 特殊命令: 手动触发自驱动发言（测试用）
+                    if text.strip() == "/trigger":
+                        if hasattr(driver, 'spontaneous_engine') and driver.spontaneous_engine:
+                            coro = driver.spontaneous_engine.manual_trigger_async()
+                            asyncio.run_coroutine_threadsafe(coro, loop)
+                            print("[TEST] 已调度手动自驱动触发")
+                        else:
+                            print("[TEST] 自驱动引擎未初始化")
+                        continue
+
+                    # 特殊命令: 查看自驱动引擎状态
+                    if text.strip() == "/spstatus":
+                        if hasattr(driver, 'spontaneous_engine') and driver.spontaneous_engine:
+                            status = driver.spontaneous_engine.get_status()
+                            silence_m = status.get("silence_duration", 0) / 60
+                            print(f"[自驱动状态]")
+                            print(f"  运行中: {status['is_running']}")
+                            print(f"  当前沉默: {silence_m:.1f} 分钟")
+                            print(f"  检查间隔: {status['check_interval']}s")
+                            print(f"  频率限制: {status.get('frequency_status', {})}")
+                            print(f"  近6次触发统计: {status.get('recent_stats', {})}")
+                        else:
+                            print("[TEST] 自驱动引擎未初始化")
+                        continue
+
                     # 使用状态机触发用户输入事件
                     if hasattr(driver, 'state_machine'):
                         print(f"[DEBUG] driver.state_machine ID: {id(driver.state_machine)}")
@@ -175,12 +200,15 @@ async def main():
     # 不 await gather：被 cancel 的 task 可能挂，直接放过
 
     print("[OK] 系统已关闭")
+    # 所有清理已完成（TTS连接关闭、记忆落盘、任务取消），强制退出避免asyncio.run内部卡死
+    os._exit(0)
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
         print("\n[STOP] 系统已关闭")
+        os._exit(0)
 
 
 
@@ -188,7 +216,7 @@ if __name__ == "__main__":
 
 
 
-# 想改思考逻辑？ → 只动 agent_brain.py
+# 想改思考逻辑？ → 只动 actions.py (V4.0 双 LLM)
 # 想改独白语气？ → 只动 agent_voice.py
-# 想改几秒触发？ → 只动 agent_driver.py 里的 IDLE_TIMEOUT
+# 想改几秒触发？ → 只动 config/default.yaml (spontaneous 段)
 # 看入口在哪？   → 打开 main.py 一眼就看到

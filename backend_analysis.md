@@ -1,274 +1,306 @@
-# Backend 深度分析报告
+# Yume AI Agent — 系统架构分析
 
-> 生成日期: 2026-04-27 | 目标: 为深度改造提供架构诊断
+> 分析日期: 2026-04-27 | 版本: V4.0 双 LLM 记忆查询架构 | 健康度: **B-**
 
 ---
 
 ## 一、总览
 
-| 维度 | 评级 | 说明 |
+| 维度 | 评级 | 变化 | 说明 |
+|------|------|------|------|
+| 架构健康度 | **B-** | D→B- | 上帝对象已拆分，假实现已替换 |
+| 线程安全 | **C+** | D→C+ | asyncio+threading 混用但有关键锁保护 |
+| 代码质量 | **B-** | C-→B- | 旧代码已清理，注释块大幅减少 |
+| 功能完整度 | **C+** | D→C+ | 记忆搜索/日记已真实化，部分功能仍为空桩 |
+| 可维护性 | **B** | D-→B | 驱动拆分、提示词文件化、FSM 类型安全化 |
+
+---
+
+## 二、整体架构
+
+```
+main.py (入口 + 生命周期)
+├── WSServer ─── MessageRouter ─── JSON-RPC 2.0 协议
+│   └── send_queue (普通 Queue，非 asyncio)
+│
+├── StateMachine (FSM)
+│   ├── State: IDLE / THINK / DO_TOOL / ASK_USER / WAIT_CONFIRM / FINISH
+│   ├── Event: USER_INPUT / NEED_TOOL / TOOL_RETURN / TASK_COMPLETE / ERROR / TIMEOUT
+│   └── actions.py: THINK Action (双LLM) + DO_TOOL Action (工具执行)
+│
+├── YumeDriver (总调度，~400 行)
+│   ├── LLM (DeepSeek, think=0.2 / speak=0.7)
+│   ├── MemoryCore (统一记忆)
+│   ├── TTSManager (TTS 队列 + 后台消费)
+│   ├── FrontendBridge (Live2D 指令 + 文本推送)
+│   └── SpontaneousEngine (沉默主动发言)
+│
+├── Plugin System
+│   ├── ToolRegistry → 5 adapters (读写文件/搜索记忆/写日记/归档)
+│   └── 查询子 LLM 直接调用工具，不经过 call_tool 链
+│
+├── EventBus (50+ 事件类型的发布订阅)
+│   ├── ComfortModel (舒适度/心情/冲动)
+│   ├── EmotionEngine (情绪平滑 0-3)
+│   └── InstinctHandler (本能触发)
+│
+└── Services
+    ├── TTSService (DashScope CosyVoice, WebSocket 长连接)
+    └── LLMAPI (httpx, 同步+异步+流式)
+```
+
+---
+
+## 三、已完成功能（可直接使用）
+
+### 3.1 双 LLM 对话架构 ★ 核心
+
+| 组件 | 实现 | 状态 |
 |------|------|------|
-| 架构健康度 | D | 上帝对象、死代码、假实现并存 |
-| 线程安全 | D | threading + asyncio 混用，无统一并发模型 |
-| 代码质量 | C- | 大量注释掉的旧代码、V1/V2/V3 混杂 |
-| 功能完整度 | D | Live2D、记忆搜索等核心功能为空桩 |
-| 可维护性 | D- | 1101行上帝对象、20路if/else链 |
+| 主 LLM（yume） | DeepSeek, temp=0.7, 无工具定义, 纯角色对话 | ✅ 完成 |
+| 查询子 LLM | 独立 LLMAPI 实例, 带工具 schema, 线程内执行→销毁 | ✅ 完成 |
+| 预检索（grep） | 关键词搜索日记/长期记忆, ~50ms, 注入主 LLM 上下文 | ✅ 完成 |
+| 缓冲信号检测 | 正则匹配 "让我想想……" 等, 自动触发深挖 | ✅ 完成 |
+| 流式输出 + TTS 流水线 | `chat_stream_async` 逐 token, 遇句号即入 TTS 队列 | ✅ 完成 |
+| 提示词文件化 | `agent_memory/prompts/yume_system.md` + `query_system.md` | ✅ 完成 |
+
+### 3.2 记忆系统
+
+| 功能 | 实现 | 状态 |
+|------|------|------|
+| 短期记忆 | `short_term_history` 列表, 实时同步写 `core/short_term.json` | ✅ 完成 |
+| 长期记忆 | `core/memories.md` 追加, 按天分段 | ✅ 完成 |
+| 日记系统 | 跨天自动归档 → `diary/daily/YYYY-MM-DD.md` | ✅ 完成 |
+| grep 全文搜索 | `search_diary()`, `search_memories()` 真实文件搜索 | ✅ 完成 |
+| 上下文构建 | `build_context()` 组装记忆+时间+人格注入主 LLM | ✅ 完成 |
+| 遗忘机制 | 重要度/时间/混合 三种策略（框架已实现） | ✅ 完成 |
+| 记忆落盘兜底 | `flush()` 强刷 + `daemon=False` 写入线程 + `join(timeout=3)` | ✅ 完成 |
+
+### 3.3 TTS 语音合成
+
+| 功能 | 实现 | 状态 |
+|------|------|------|
+| CosyVoice 实时合成 | DashScope QwenTtsRealtime, WebSocket 长连接复用 | ✅ 完成 |
+| 心跳保活 | 30s 间隔检查, 断线自动重连 | ✅ 完成 |
+| 统一播报队列 | `TTSManager._tts_queue`, 后台消费线程, 一句一锁 | ✅ 完成 |
+| 口型同步 | 24000Hz PCM → RMS 计算 → visemes 帧 | ✅ 完成 |
+| 情绪语音指导 | 6 种情绪的中文语音指导词, `_build_instructions()` | ✅ 完成 |
+| 文本分段 | `_split_tts_sentences()`, 标点断句 + 长句强制切分 | ✅ 完成 |
+| 连接池管理 | `_all_connections` 追踪所有 WebSocket, 退出全关闭 | ✅ 完成 |
+
+### 3.4 状态机
+
+| 功能 | 实现 | 状态 |
+|------|------|------|
+| 6 状态 7 事件 | IDLE/THINK/DO_TOOL/ASK_USER/WAIT_CONFIRM/FINISH | ✅ 完成 |
+| 转移规则注册 | `register_transition(from_state, event, to_state)` | ✅ 完成 |
+| Action 绑定 | `register_action(state, callable)`, async action 支持 | ✅ 完成 |
+| 类型安全键 | `TransitionKey = Tuple[str, str]` (避免跨模块 enum 不一致) | ✅ 完成 |
+
+### 3.5 自驱动引擎
+
+| 功能 | 实现 | 状态 |
+|------|------|------|
+| 沉默检测 | TriggerPolicy 基于静默时长+时段+上下文丰富度 | ✅ 完成 |
+| 频率限制 | FreqLimiter: 最小间隔 300s, 最大 3次/时, 10次/天 | ✅ 完成 |
+| 内容生成 | 模板(low priority) + LLM(high priority) 双模式 | ✅ 完成 |
+| 连续发言模式 | 指数回退延迟, 概率递减自动停止 | ✅ 完成 |
+| 用户响应追踪 | ResponseTracker 正向/中性/负向/无视 分类 | ✅ 完成 |
+
+### 3.6 插件系统
+
+| 功能 | 实现 | 状态 |
+|------|------|------|
+| 工具注册 | `ToolRegistry` 单例, 5 个 adapter 已注册 | ✅ 完成 |
+| Legacy Schema 生成 | `get_legacy_schema()` → OpenAI function-calling JSON | ✅ 完成 |
+| 查询子 LLM 工具调用 | 在线程内直接 `registry.execute_tool()` | ✅ 完成 |
+
+### 3.7 前端通信
+
+| 功能 | 实现 | 状态 |
+|------|------|------|
+| WebSocket 服务 | `ws_server.py`, JSON-RPC 2.0 协议, 8765 端口 | ✅ 完成 |
+| TTS 音频推送 | Base64 PCM → `{"type": "TTS_AUDIO", ...}` → send_queue | ✅ 完成 |
+| Live2D 指令 | `{"type": "LIVE2D_CMD", "cmd": "emotion", ...}` → send_queue | ✅ 完成 |
+| 文本推送（打字机） | `{"type": "TEXT_CHUNK", ...}` / `{"type": "TEXT_THINKING", ...}` | ✅ 完成 |
+| 终端输入 | stdin 线程 + `asyncio.run_coroutine_threadsafe` | ✅ 完成 |
 
 ---
 
-## 二、致命问题（P0 — 阻塞一切）
+## 四、部分实现（功能可用但有局限）
 
-### 2.1 Live2D 完全不可用
+### 4.1 情绪系统 `[P1]`
 
-**文件**: [deprecated/live2d/live2d_manager.py](backend/deprecated/live2d/live2d_manager.py)
+**文件**: `core/emotion/emotion_engine.py` (56 行)
 
-```python
-class Live2DManager:
-    def set_emotion_mode(self, mode): pass
-    def start(self): pass
-    def update(self): pass
-    def send_params(self, params): pass
-    def send_tts(self, audio_base64, visemes): pass
-```
-
-整个类只有 55 行，**所有方法都是 `pass`**。后端发给前端的动画参数、口型数据实际上通过 WebSocket 的 `send_queue` 直接发送 json，绕过了 Live2DManager。这意味着：
-- 没有任何 Live2D 模型加载能力
-- 没有参数平滑过渡
-- 没有模型渲染管线
-
-### 2.2 MemoryCore 搜索/记忆操作全部为假实现
-
-**文件**: [core/memory/memory_core.py](backend/core/memory/memory_core.py#L426-L580)
-
-以下 15+ 个静态方法返回硬编码的模拟字符串：
-
-| 方法 | 返回值 |
-|------|--------|
-| `search_memory()` | `"搜索到关于 'keyword' 的模拟记忆结果"` |
-| `search_by_date()` | `"按日期搜索：start_date 到 end_date（模拟结果）"` |
-| `update_memory()` | `"记忆更新成功（模拟）"` |
-| `update_long_term_memory()` | `"长期记忆更新成功（模拟）"` |
-| `delete_memory_entry()` | `"记忆删除成功（模拟）"` |
-| `create_file()` | `"文件创建成功（模拟）"` |
-| `tool_read_file()` | `"模拟文件内容"` |
-| `tool_search_memory()` | `"搜索到关于 'keyword' 的模拟记忆结果"` |
-| `tool_summarize_and_archive()` | `"总结归档成功（模拟）"` |
-| `tool_write_diary()` | `"日记写入成功（模拟）"` |
-
-**后果**: Agent 的所有"记忆搜索"、"日记写入"等操作实际上什么都没做，但返回了成功消息。Agent 不知道自己在撒谎。
-
-### 2.3 Dead Code — agent.py 导入不存在的模块
-
-**文件**: [core/agent/agent.py](backend/core/agent/agent.py)
-
-```python
-from core.agent.memory import Memory           # 不存在
-from core.agent.tools.base import BaseTool     # 不存在
-from core.agent.decision_engine import ...     # 不存在
-from core.agent.executor import Executor       # 不存在
-from core.agent.prompts import SYSTEM_PROMPT   # 不存在
-```
-
-**后果**: 只要 `import core.agent.agent`，进程立刻崩溃。这个文件已被主流程废弃但有残留引用风险。
-
----
-
-## 三、架构问题（P1 — 严重拖累开发效率）
-
-### 3.1 YumeDriver 上帝对象（1101 行，20+ 职责）
-
-**文件**: [core/agent/agent_driver.py](backend/core/agent/agent_driver.py)
-
-单一类承担了以下所有职责：
-
-1. 记忆上下文管理（冷加载、裁剪）
-2. LLM 协作者初始化（Qwen + DeepSeek 双模型）
-3. TTS 队列管理（生产者/消费者模式）
-4. Live2D 管理器集成
-5. 事件处理器注册
-6. 流式响应处理 + TTS 缓冲
-7. 自言自语引擎集成
-8. 日记管线（异步）
-9. 深度记忆召回
-10. 情绪追踪与标签
-11. WebSocket 发送
-12. 状态机交互
-
-**`handle_user_input()` 方法超过 200 行**，内部嵌套了情绪标注、记忆写入、深度召回等多个异步操作。
-
-### 3.2 20 路 if/elif 工具路由链
-
-**文件**: [core/agent/agent_brain.py](backend/core/agent/agent_brain.py#L116-L221)
-
-```python
-def call_tool(tool_name, params, llm):
-    if tool_name == "load_memory":       ...
-    elif tool_name == "search_memory":   ...
-    elif tool_name == "search_by_date":  ...
-    elif tool_name == "update_memory":   ...
-    elif tool_name == "update_long_term_memory": ...
-    elif tool_name == "write_daily_diary": ...
-    elif tool_name == "auto_write_diary": ...
-    elif tool_name == "write_weekly_summary": ...
-    elif tool_name == "write_monthly_summary": ...
-    elif tool_name == "write_yearly_summary": ...
-    elif tool_name == "precise_search_memory": ...
-    elif tool_name == "delete_memory_entry": ...
-    elif tool_name == "locate_memory_entry": ...
-    elif tool_name == "create_file":     ...
-    elif tool_name == "clear_file":      ...
-    elif tool_name == "delete_memory_file": ...
-    elif tool_name == "read_file":       ...
-    elif tool_name == "write_file":      ...
-    elif tool_name == "summarize_and_archive": ...
-    elif tool_name == "write_diary":     ...
-    else: return "错误失败：unknown tool"
-```
-
-且存在 bug：`search_memory` 出现了两次（行 124 和行 210），第二个定义永远不会被命中。
-
-### 3.3 双重适配器反模式
-
-新的插件系统通过 `adapters.py` 包装旧的 `call_tool()`，而旧的 `call_tool()` 又调用 `MemoryCore` 的假实现：
-
-```
-Plugin System → Adapter → call_tool() → MemoryCore 假实现
-```
-
-三层调用链，每层都有参数名映射和转换损耗，最终调用一个假的。
-
-### 3.4 废弃但仍在生产使用的代码
-
-**文件**: [services/llm/llm_collaborator.py](backend/services/llm/llm_collaborator.py)
-
-标记为 `[Phase 3.1 废弃标记]`，但仍被 `YumeDriver.__init__()` 实例化并使用。585 行代码既不能删（还在用）又不能改（已被标记废弃）。
-
-### 3.5 同步 LLM API 与异步上下文的冲突
-
-**文件**: [core/llm/llm_api.py](backend/core/llm/llm_api.py)
-
-所有 API 调用使用同步 `requests` 库：
-```python
-def ask(self, prompt):  # 同步阻塞
-    response = requests.post(...)
-```
-
-但调用方在 asyncio 事件循环中，只能靠 `run_in_executor` 把阻塞调用扔到线程池。这导致：
-- 无法利用异步 HTTP 的并发优势
-- LLM 调用期间线程被阻塞
-- `agent_voice.py` 中甚至出现 `asyncio.get_event_loop()` 在子线程中失败的情况
-
-### 3.6 TTS 三重冗余发送
-
-**文件**: [core/agent/agent_voice.py](backend/core/agent/agent_voice.py)
-
-同一段音频数据通过三条路径尝试发送：
-```
-_speak_segment():
-  1. 尝试直接 WebSocket 发送
-  2. 失败 → 放入 send_queue
-  3. 失败 → 尝试 Live2D 发送（但 Live2D 是空的）
-```
-
-### 3.7 ws_server.py 忙等轮询
-
-```python
-async def _queue_consumer(self):
-    while True:
-        while self.send_queue.empty():     # 忙等！
-            await asyncio.sleep(0.01)      # 每秒 100 次无效唤醒
-        data = self.send_queue.get_nowait()
-```
-
-应替换为 `asyncio.Queue`，用 `await queue.get()` 自然阻塞等待。
-
----
-
-## 四、设计与迁移债务（P2）
-
-### 4.1 Phase 3.1 迁移未完成
-
-大量代码中残留：
-- `[V1→V3]` 迁移标记
-- 整块被注释的旧逻辑（如 `agent_brain.py` 中注释掉的 `short_memories.md` 写入）
-- `[Phase 3.1 废弃标记]` 但仍在活跃使用的模块
-
-### 4.2 单例模式的滥用
-
-至少 4 种不同的单例实现：
-- `WSServer.__new__` 方式
-- `get_state_machine()` 函数
-- `get_global_registry()` 函数
-- 模块级全局变量 `ws_instance = WSServer()`
-
-### 4.3 字符串键状态机
-
-**文件**: [core/state_machine/state_machine.py](backend/core/state_machine/state_machine.py)
-
-```python
-transitions["IDLE:USER_INPUT"] = (State.THINK, action)
-```
-
-使用字符串拼接作为字典键来规避 enum singleton 的跨模块导入问题，脆弱且无法静态检查。
-
-### 4.4 LLM 实例重复创建
-
-**文件**: [core/state_machine/actions.py](backend/core/state_machine/actions.py)
-
-`create_real_think_action()` 和 `create_real_do_tool_action()` 内部各自创建新的 `LLMAPI` 实例，直接从 `config.DEEPSEEK_API_KEY` 读取密钥。工厂函数内部不应做依赖注入之外的外部资源获取。
-
-### 4.5 配置验证未被调用
-
-**文件**: [config.py](backend/config.py)
-
-```python
-def validate_config():
-    """验证配置完整性"""
-    errors = []
-    ...
-```
-
-此函数已完整定义但 `main.py` 中没有任何地方调用它。
-
----
-
-## 五、改造路线图建议
-
-### 第一阶段：止血（1-2 周）
-
-| 任务 | 说明 |
+| 现状 | 问题 |
 |------|------|
-| 删除 `agent.py` | 彻底移除死代码 |
-| 实现 MemoryCore 真实搜索 | 基于 SQLite/FTS5 或文件 grep 替换假实现 |
-| 将 `_queue_consumer` 改为 `asyncio.Queue` | 消除忙等 |
-| 清理 `agent_brain.py` 中注释掉的旧代码 | 减少认知负担 |
+| 3 行核心算法（平滑+切换+衰减） | 对话中几乎不使用，`current_emotion` 固定为 `"neutral"` |
+| `_build_instructions()` 支持 6 种情绪 | 实际传入的情绪只有 neutral |
+| EmotionEngine 实例存在 | 没有与主对话流程打通——用户说的话不改变情绪 |
 
-### 第二阶段：架构修复（2-4 周）
+**改进方向**: 在 `action_think` 中根据用户输入内容调用 `emotion_engine.update_emotion()`, 并将当前情绪传入 TTS。
 
-| 任务 | 说明 |
+### 4.2 查询子 LLM 工具系统 `[P1]`
+
+**文件**: `core/state_machine/actions.py` (`_run_memory_query`, `_execute_single_tool`)
+
+| 现状 | 问题 |
 |------|------|
-| 拆分 `YumeDriver` | 按职责拆为 MemoryManager、TTSManager、EmotionTracker 等独立类 |
-| 重构 `call_tool` | 改用注册表模式（dict dispatch），与 plugins/registry 统一 |
-| 统一并发模型 | 全链路 asyncio + aiohttp 替换同步 requests |
-| 删除 `llm_collaborator.py` | 将其有效逻辑迁移到 Action 引擎 |
+| 5 个工具 adapter 已注册 | 查询子 LLM 实际只用过 search_memory, 其他未充分测试 |
+| 工具结果截断为 500 字符 | 可能丢失关键信息 |
+| `agent_brain.py` 仍有 20 路 if/elif 的 `call_tool()` | 查询子 LLM 不经过它，但旧路径仍存在 |
 
-### 第三阶段：功能补全（4-6 周）
+**改进方向**: 删除 `agent_brain.py:call_tool()` 的 if/elif 链(已被 plugin + query sub-LLM 替代); 工具结果长度可配置。
 
-| 任务 | 说明 |
+### 4.3 自驱动引擎与状态机的整合 `[P1]`
+
+**文件**: `core/spontaneous/engine.py`, `core/agent/agent_driver.py`
+
+| 现状 | 问题 |
 |------|------|
-| 实现 Live2DManager | 对接前端 Live2D SDK（详见 live2d_analysis.md） |
-| 实现记忆向量检索 | SQLite + numpy 本地向量搜索替代假桩 |
-| 状态机类型安全化 | 用 Pydantic 模型替代字符串键 |
-| 引入 proper 的 DI 容器 | 消除工厂函数内创建依赖 |
+| 引擎正常运行, 回调 → `_on_spontaneous_speech()` → TTS | 绕过状态机——如果引擎触发时状态机正忙(THINK), 会冲突 |
+| `manual_trigger()` 方法 | 内部使用 `asyncio.run()` 在已有 event loop 中会崩溃 |
+| `interrupt_handler.py` | 占位符, ASR 打断逻辑为空 |
+
+**改进方向**: 自驱动发言也走状态机(新增 `SPONTANEOUS_TRIGGER` 事件); `manual_trigger` 改用 `asyncio.create_task`。
+
+### 4.4 技能系统 `[P2]`
+
+**文件**: `core/skill/skill_loader.py`, `core/skill/skill_matcher.py`
+
+| 现状 | 问题 |
+|------|------|
+| `SkillLoader` 从 `skills/*.md` 加载 3 个 skill | 未集成到主对话流——skill 匹配结果未注入 LLM 上下文 |
+| `SkillMatcher` 返回分级的 skill + experience text | experience text 的注入点不明确 |
+
+**改进方向**: 在 `action_think` 中调用 `skill_matcher.match()` → 匹配到的 skill 提示注入 system prompt。
+
+### 4.5 记忆压缩 `[P2]`
+
+| 现状 | 问题 |
+|------|------|
+| `short_term_history` 上限裁剪 (`pop(0)`) | 旧的对话直接丢弃, 没有先压缩/摘要 |
+| 跨天日记有 `check_cross_day_diary()` | diary 写入后不减少短期记忆量 |
+
+**改进方向**: 超过 N 条时, 先用 LLM 对旧对话做摘要(1-2 句), 保留语义而非直接丢弃。
+
+### 4.6 事件总线的 `send_queue` 忙等 `[P2]`
+
+**文件**: `api/netwebsocket/ws_server.py`
+
+```python
+while self.send_queue.empty():   # 忙等
+    await asyncio.sleep(0.01)    # 每秒 100 次无效唤醒
+```
+
+应改为 `asyncio.Queue` 用 `await queue.get()` 自然阻塞。
+
+### 4.7 配置文件利用率低 `[P2]`
+
+**文件**: `config/default.yaml` (完整的 YAML 配置树)
+
+| 配置项 | 代码是否使用 |
+|------|------|
+| `ai.providers.*.temperature` | 部分（actions.py 硬编码 temperature 值） |
+| `memory.*` (capacity, forgetting, WAL) | 框架存在但参数未从 YAML 读取 |
+| `emotion.mappings` | 未使用，TTS emotion 硬编码在 `_build_instructions()` |
+| `live2d.*` (animation_ranges, smoothing) | `FrontendBridge` 发送指令但参数未读取 YAML |
+
+**改进方向**: 将硬编码的参数迁移到 YAML 配置读取。
 
 ---
 
-## 六、文件统计
+## 五、未实现 / 空桩
 
-| 指标 | 数值 |
+### 5.1 `agent.py` 死代码 `[已解决]`
+
+~~**文件**: `core/agent/agent.py`~~ — 文件已不存在，之前已删除。
+
+### 5.2 `llm_collaborator.py` 废弃代码 `[已解决]`
+
+~~**文件**: `services/llm/llm_collaborator.py` (585 行)~~ — 已删除（零 import 引用）。
+
+### 5.3 ASR（语音识别）`[未来]`
+
+`interrupt_handler.py` 有 `InterruptType`(VOICE_START, VOICE_CONTENT, MANUAL_STOP, TIMEOUT) 占位符, 但无任何 ASR 集成代码。
+
+### 5.4 语义/向量搜索 `[未来]`
+
+V4.0 中移除了 FAISS, 目前纯 grep 文本搜索。对于模糊语义匹配("上次聊到的那个有趣的话题")无能为力。
+
+**可选方案**: 轻量级本地 embedding (如 `all-MiniLM-L6-v2` + numpy 余弦相似度), 或直接让查询子 LLM 读文件做语义判断。
+
+### 5.5 用户认证 / 多用户 `[未来]`
+
+`user/user_info.json` 为空, 无任何用户管理代码。当前为单用户设计。
+
+### 5.6 测试覆盖 `[P1]`
+
+| 模块 | 测试状态 |
 |------|------|
-| Python 文件总数 | 70+ |
-| 最大文件 | agent_driver.py (1101 行) |
-| 完全死代码 | agent.py (90 行，导入即崩溃) |
-| 空桩/假实现 | memory_core.py 15 方法 + live2d_manager.py 全部 |
-| 废弃但活跃 | llm_collaborator.py (585 行) |
+| `memory_core` | 1 个冒烟测试 (`test_memory_closed_loop.py`) |
+| `state_machine` | 无 |
+| `actions` (双 LLM) | 无 |
+| `TTS` | 无 |
+| `WebSocket` | 无 |
+| `spontaneous_engine` | 无 |
+
+---
+
+## 六、技术债务清单
+
+| ID | 问题 | 严重度 | 文件 |
+|------|------|------|------|
+| D1 | `agent_brain.py:call_tool()` 20路 if/elif 未删除(已被插件替代) | P1 | `core/agent/agent_brain.py` |
+| D4 | `ws_server.py` send_queue 忙等轮询 | P2 | `api/netwebsocket/ws_server.py` |
+| D5 | `actions.py` 工厂函数内 `LLMAPI()` 直接新建(应注入) | P2 | `core/state_machine/actions.py:207-209` |
+| D6 | 情绪系统与主对话流未打通 | P1 | `core/emotion/emotion_engine.py` |
+| D7 | 自驱动引擎绕过状态机 | P1 | `core/spontaneous/engine.py` |
+| D8 | 配置文件参数大量未使用 | P2 | `config/default.yaml` |
+| D9 | 记忆溢出直接丢弃, 无压缩 | P2 | `core/memory/memory_core.py` |
+| D10 | `manual_trigger()` 的 `asyncio.run()` 在运行 loop 中会崩溃 | P2 | `core/spontaneous/engine.py:453` |
+| D11 | `[V1→V3]` 残留迁移标记 + 注释掉的旧代码 | P3 | 多个文件 |
+| D12 | 工具返回截断 500 字符硬编码 | P3 | `core/state_machine/actions.py:186` |
+
+---
+
+## 七、当前能力矩阵
+
+| 能力 | 水平 | 说明 |
+|------|------|------|
+| 角色对话 | ★★★★☆ | 人设稳定, 回复自然, 有记忆辅助 |
+| 记忆检索 | ★★★☆☆ | grep 搜索可用, 缺语义搜索 |
+| 语音合成 | ★★★★★ | CosyVoice 高质量, 口型同步, 流式 |
+| 情绪表达 | ★★☆☆☆ | 框架存在但未接入对话流 |
+| 主动发言 | ★★★☆☆ | 沉默触发可用, 但绕过状态机 |
+| 工具调用 | ★★★☆☆ | 5 个工具可用, 但未充分测试 |
+| 前端集成 | ★★★★☆ | TTS音频+Live2D指令+文本推送 |
+| 可运维性 | ★★★☆☆ | 优雅退出已修复, 缺监控日志 |
+| 扩展性 | ★★★☆☆ | 插件系统框架好, 但 skill 未接入 |
+
+---
+
+## 八、下一阶段建议优先级
+
+```
+P0 (立即):
+  (无 — 已完成)
+
+P1 (本周):
+  1. 情绪系统接入主对话流（让 yume 真的有情绪变化）
+  2. 删除 agent_brain.py:call_tool() 的 if/elif 链
+  3. 自驱动引擎接入状态机
+  4. 记忆溢出 → LLM 压缩摘要而非直接丢弃
+
+P2 (本月):
+  5. ws_server.py send_queue → asyncio.Queue
+  6. 配置文件参数接入代码
+  7. skill 系统接入主对话流
+  8. 测试: 状态机 + actions 的端到端测试
+
+P3 (按需):
+  9. 语义搜索（轻量 embedding）
+  10. ASR 语音输入集成
+  11. 多用户支持
+```

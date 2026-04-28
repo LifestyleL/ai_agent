@@ -40,8 +40,8 @@ def _load_prompt(name: str) -> str:
 
 def load_personality() -> str:
     possible_paths = [
+        Path(__file__).parent.parent.parent / "agent_memory" / "core" / "personality.md",
         Path(__file__).parent.parent.parent / "agent_memory" / "personality.md",
-        Path(__file__).parent.parent.parent / "core" / "memory" / "personality.md",
     ]
     for path in possible_paths:
         if path.exists():
@@ -54,11 +54,8 @@ def load_personality() -> str:
 
 
 def _detect_recall_signal(text: str) -> bool:
-    """检测主 LLM 输出是否为记忆查询信号"""
-    # 短文本 + 匹配缓冲模式 → 查询信号
-    if len(text) <= 60 and _RECALL_SIGNAL_PATTERN.search(text):
-        return True
-    return False
+    """检测主 LLM 输出是否为记忆查询信号（不再限制文本长度）"""
+    return _RECALL_SIGNAL_PATTERN.search(text) is not None
 
 
 def _extract_query_goal(user_input: str, llm_response: str) -> str:
@@ -214,112 +211,225 @@ def create_real_think_action(
         deep_recall_result = context.get("deep_recall_result", "")  # 查询子 LLM 返回的结果
         round_count = context.get("recall_round", 0)  # 防止无限循环
 
-        logger.warning(f"[THINK V4.0] 思考中... 输入: {user_input[:30]}... (回忆轮次: {round_count})")
+        logger.warning(f"[THINK V5.0] 思考中... 输入: {user_input[:30]}... (回忆轮次: {round_count})")
 
-        # --- Step 1: 预检索（grep，无需 LLM，~50ms） ---
-        memory_context = ""
-        pre_search_result = ""
-        if hasattr(driver_instance, 'memory_core') and driver_instance.memory_core:
-            mc = driver_instance.memory_core
-            # 用 build_context 组装上下文（含 grep 预检索）
-            memory_context = mc.build_context(user_input)
+        # ================================================================
+        # Step 0: 记忆意图前置检测 + 结构化搜索（LLM 之前！）
+        # ================================================================
+        mc = driver_instance.memory_core if hasattr(driver_instance, 'memory_core') else None
+        structured = {
+            "diary_memory": "（暂无日记记录）",
+            "precise_query": "（本次未触发精准查询）",
+            "pre_search": "（无预检索结果）",
+            "deep_recall": "（无深层记忆浮现）",
+            "time_context": mc.get_time_context() if mc else "",
+            "write_request": False,
+        }
 
-            # 同时做关键词直接搜索
-            import re as _re
-            words = _re.findall(r"[一-鿿\w]{2,}", user_input)
-            if words:
-                pre_search_result = mc.search_diary(words[0], limit=2)
+        if mc:
+            structured = mc.build_structured_sections(user_input, deep_recall_result)
+            # 旧版兼容：如果 deep_recall_result 已有值，覆盖 deep_recall
+            if deep_recall_result:
+                structured["deep_recall"] = deep_recall_result
+            # 旧版兼容：recall_injection 追加到 deep_recall
+            if recall_injection:
+                if structured["deep_recall"] == "（无深层记忆浮现）":
+                    structured["deep_recall"] = recall_injection.replace("【潜意识浮现】", "").strip()
+                else:
+                    structured["deep_recall"] += "\n" + recall_injection
 
-        # --- Step 2: 构建主 LLM 提示词（无工具定义！） ---
+            # Step 0.5: 情绪推断（从用户输入，纯规则，0延迟）
+            if hasattr(mc, '_emotion_engine') and mc._emotion_engine:
+                etype, estrength = mc._emotion_engine.infer_from_text(user_input)
+                if estrength > 0:
+                    mc._emotion_engine.update_emotion(etype, estrength)
+
+        # ================================================================
+        # Step 1: 构建结构化系统提示词（V5.0 分区架构）
+        # ================================================================
         persona = load_personality()
         yume_template = _load_prompt("yume_system.md")
         if not yume_template:
+            # 兜底模板（使用分区格式）
             yume_template = """你是 yume，一个温柔偶尔傲娇的 AI 女主播。
 {persona}
 
-## 记忆参考
-{memory_context}
+## 【上下文】
+{time_context}
 
-## 对话历史
+## 【日记/长期记忆】
+{diary_memory}
+
+## 【查询到的记忆】
+{precise_query}
+
+## 【预检索参考】
+{pre_search}
+
+## 【深层记忆/潜意识】
+{deep_recall}
+
+## 【对话历史】
 {history}"""
 
-        # 短期历史
-        history_str = ""
-        if hasattr(driver_instance, 'memory_core') and driver_instance.memory_core:
-            history_str = driver_instance.memory_core.get_short_term_context(max_turns=20) or "（暂无对话记录）"
+        history_str = mc.get_short_term_context(max_turns=20) if mc else "（暂无对话记录）"
 
         system_prompt = yume_template.format(
             persona=persona,
-            memory_context=memory_context or "（无相关记忆）",
-            history=history_str
+            time_context=structured["time_context"] or "",
+            diary_memory=structured["diary_memory"],
+            precise_query=structured["precise_query"],
+            pre_search=structured["pre_search"],
+            deep_recall=structured["deep_recall"],
+            history=history_str or "（暂无对话记录）",
         )
 
-        # 如果有前一轮查询子 LLM 的结果，注入
-        if deep_recall_result:
-            system_prompt += f"\n\n【刚才深入查到的记忆】\n{deep_recall_result}\n请基于这些记忆自然地继续回复用户。"
+        # ================================================================
+        # Step 2: 情绪标签（供 TTS 使用）
+        # ================================================================
+        current_emotion = "neutral"
+        if mc and hasattr(mc, '_emotion_engine') and mc._emotion_engine:
+            from core.emotion.emotion_engine import EmotionEngine
+            current_emotion = EmotionEngine.type_to_label(mc._emotion_engine.type)
+            if hasattr(driver_instance, 'tts_manager'):
+                driver_instance.tts_manager.current_emotion = current_emotion
 
-        # 如果有潜意识碎片，注入
-        if recall_injection:
-            system_prompt += f"\n{recall_injection}"
+        # 推送情绪到前端 Live2D（表情 + 体态）
+        if hasattr(driver_instance, 'frontend'):
+            driver_instance.frontend.send_live2d_cmd("emotion", emotion=current_emotion)
 
-        # --- Step 3: 调用主 LLM（纯角色，无工具） ---
+        logger.info(f"[THINK V5.0] 记忆分区: diary={len(structured['diary_memory'])}c, "
+                    f"precise={len(structured['precise_query'])}c, "
+                    f"presearch={len(structured['pre_search'])}c")
+
+        # ================================================================
+        # Step 3: 流式 LLM + 逐句 TTS 流水线
+        # ================================================================
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_input}
+        ]
+
+        response_text = ""
+        streamed_to_tts = False
+
         try:
-            raw_response = await llm_speaker.ask_with_system_async(system_prompt, user_input, temperature=0.7)
-            response_text = raw_response.strip().strip('"').strip("'") if raw_response else ""
+            pending = ""
+            async for token in llm_speaker.chat_stream_async(messages, temperature=0.7):
+                if token.startswith("[ERROR]"):
+                    raise RuntimeError(f"流式中断: {token}")
+                response_text += token
+                pending += token
 
-            if not response_text or response_text.isspace():
-                logger.error("[THINK V4.0] 主 LLM 返回空回复")
-                await state_machine.trigger(Event.ERROR, {"error": "主 LLM 返回空回复"})
-                return
+                cut = -1
+                for p in ["。", "！", "？", "\n"]:
+                    pos = pending.find(p)
+                    if pos != -1 and (cut == -1 or pos < cut):
+                        cut = pos
 
-            logger.warning(f"[THINK V4.0] 主 LLM 回复: {response_text[:80]}...")
+                if cut != -1:
+                    sentence = pending[:cut + 1]
+                    pending = pending[cut + 1:]
+                    clean = sentence.strip()
+                    has_content = any(c.isalnum() or '一' <= c <= '鿿' for c in clean)
+                    if has_content and len(clean) >= 2:
+                        if hasattr(driver_instance, 'tts_manager'):
+                            driver_instance.tts_manager.enqueue_text(sentence, current_emotion)
+                            streamed_to_tts = True
+
+            if pending.strip():
+                clean = pending.strip()
+                has_content = any(c.isalnum() or '一' <= c <= '鿿' for c in clean)
+                if has_content and len(clean) >= 2:
+                    if hasattr(driver_instance, 'tts_manager'):
+                        driver_instance.tts_manager.enqueue_text(pending, current_emotion)
+                        streamed_to_tts = True
+
+            response_text = response_text.strip().strip('"').strip("'")
 
         except Exception as e:
-            logger.error(f"[THINK V4.0] 主 LLM 调用失败: {e}")
-            await state_machine.trigger(Event.ERROR, {"error": str(e)})
+            logger.error(f"[THINK V5.0] 流式LLM失败: {e}, 回退到非流式")
+            try:
+                raw = await llm_speaker.ask_with_system_async(system_prompt, user_input, temperature=0.7)
+                response_text = raw.strip().strip('"').strip("'") if raw else ""
+                if response_text and hasattr(driver_instance, 'speak_final_text'):
+                    await asyncio.to_thread(driver_instance.speak_final_text, response_text)
+                    streamed_to_tts = True
+            except Exception as e2:
+                logger.error(f"[THINK V5.0] 非流式LLM也失败: {e2}")
+                await state_machine.trigger(Event.ERROR, {"error": str(e2)})
+                return
+
+        if not response_text or response_text.isspace():
+            logger.error("[THINK V5.0] 主 LLM 返回空回复")
+            await state_machine.trigger(Event.ERROR, {"error": "主 LLM 返回空回复"})
             return
 
-        # --- Step 4: 检测是否需要深挖记忆 ---
-        is_recall = _detect_recall_signal(response_text)
+        logger.warning(f"[THINK V5.0] 主 LLM 回复: {response_text[:80]}...")
 
-        if is_recall and round_count < 2 and pre_search_result:
-            # 主 LLM 发出了缓冲信号 → 启动查询子 LLM
-            logger.warning(f"[THINK V4.0] 检测到回忆信号: '{response_text[:40]}...'")
+        # ================================================================
+        # Step 4: 检测是否需要深挖记忆（去掉长度限制！）
+        # ================================================================
+        # 只要 LLM 说了缓冲语，无论多长都要触发查询
+        is_recall = _RECALL_SIGNAL_PATTERN.search(response_text) is not None
 
-            # 发送缓冲语到前端（防止冷场）
-            if hasattr(driver_instance, 'send_buffer_text'):
-                await asyncio.to_thread(driver_instance.send_buffer_text, response_text)
-            elif hasattr(driver_instance, 'speak_final_text'):
-                await asyncio.to_thread(driver_instance.speak_final_text, response_text)
+        # 如果没有缓冲语但有记忆查询意图且精准查询为空，也触发
+        if not is_recall and mc:
+            intent = mc.detect_memory_intent(user_input)
+            if intent["intent"] in ("date_query", "keyword_query") and structured["precise_query"] == "（本次未触发精准查询）":
+                is_recall = True
+                logger.warning(f"[THINK V5.0] 从意图检测触发深挖: {intent['intent']}")
+
+        if is_recall and round_count < 2:
+            logger.warning(f"[THINK V5.0] 检测到回忆信号: '{response_text[:60]}...'")
+
+            # 缓冲语已通过流式送 TTS，通知前端
+            if not streamed_to_tts:
+                if hasattr(driver_instance, 'send_buffer_text'):
+                    await asyncio.to_thread(driver_instance.send_buffer_text, response_text)
+                elif hasattr(driver_instance, 'speak_final_text'):
+                    await asyncio.to_thread(driver_instance.speak_final_text, response_text)
+
+            if hasattr(driver_instance, 'frontend'):
+                driver_instance.frontend.send_text_to_frontend(response_text, "thinking")
 
             # 启动查询子 LLM（在线程中运行，避免阻塞）
             query_goal = _extract_query_goal(user_input, response_text)
-            logger.warning(f"[THINK V4.0] 启动查询子 LLM，目标: {query_goal[:80]}...")
+            logger.warning(f"[THINK V5.0] 启动查询子 LLM，目标: {query_goal[:80]}...")
 
             try:
                 recall_result = await asyncio.to_thread(
                     _run_memory_query, query_goal, registry
                 )
-                logger.warning(f"[THINK V4.0] 查询子 LLM 返回: {recall_result[:100] if recall_result else '(空)'}...")
+                logger.warning(f"[THINK V5.0] 查询子 LLM 返回: {recall_result[:100] if recall_result else '(空)'}...")
             except Exception as e:
-                logger.error(f"[THINK V4.0] 查询子 LLM 失败: {e}")
+                logger.error(f"[THINK V5.0] 查询子 LLM 失败: {e}")
                 recall_result = f"记忆检索失败: {e}"
 
-            # 将结果注入 context，重新进入 THINK
             context["deep_recall_result"] = recall_result
             context["recall_round"] = round_count + 1
-            await state_machine.trigger(Event.NEED_TOOL, context)
+            # 直接重入 THINK，避免空转 DO_TOOL 增加延迟
+            await action_think(context)
             return
 
-        # --- Step 5: 正常回复 → 播报 → 完成 ---
-        logger.warning(f"[THINK V4.0] 最终回复: {response_text[:100]}...")
+        # ================================================================
+        # Step 5: 正常回复 → 收尾 + 异步写入
+        # ================================================================
+        logger.warning(f"[THINK V5.0] 最终回复: {response_text[:100]}...")
 
-        if hasattr(driver_instance, 'speak_final_text'):
+        if not streamed_to_tts and hasattr(driver_instance, 'speak_final_text'):
             await asyncio.to_thread(driver_instance.speak_final_text, response_text)
 
-        # 异步写入记忆
-        if hasattr(driver_instance, 'memory_core') and driver_instance.memory_core:
-            driver_instance.memory_core.start_async_memory_write(user_input, response_text)
+        # 异步记忆写入（含日记 + 短期记忆）
+        if mc:
+            mc.start_async_memory_write(user_input, response_text)
+            # 如果用户请求写入，额外追加到日记
+            if structured.get("write_request"):
+                mc.append_diary_draft(f"用户明确要求记住：{user_input[:200]}")
+
+        # 后台更新对话目标
+        if hasattr(driver_instance, 'goal_tracker') and driver_instance.goal_tracker:
+            driver_instance.goal_tracker.maybe_update()
 
         await state_machine.trigger(Event.TASK_COMPLETE)
 
@@ -348,6 +458,11 @@ def create_real_do_tool_action(
         tool_params = context.get("tool_params", {})
         tool_batch = context.get("tool_batch", [])
         is_batch = context.get("is_batch", False)
+
+        if not tool_name and not tool_batch:
+            logger.warning(f"[DO_TOOL V4.0] 空工具调用，跳过 (context keys: {list(context.keys())})")
+            await state_machine.trigger(Event.TOOL_RETURN, context)
+            return
 
         logger.warning(f"[DO_TOOL V4.0] 执行工具: {tool_name}, 批量: {is_batch}")
 

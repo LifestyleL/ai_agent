@@ -4,7 +4,7 @@
  * Use of this source code is governed by the Live2D Open Software license
  * that can be found at https://www.live2d.com/eula/live2d-open-software-license-agreement_en.html.
  */
-import { LAppAudioManager } from './LAppAudioManager';
+import { AiAudioManager } from './ai/AiAudioManager';
 import { CubismDefaultParameterId } from '@framework/cubismdefaultparameterid';
 import { CubismModelSettingJson } from '@framework/cubismmodelsettingjson';
 import {
@@ -44,7 +44,9 @@ import { LAppWavFileHandler } from './lappwavfilehandler';
 import { CubismMoc } from '@framework/model/cubismmoc';
 import { LAppDelegate } from './lappdelegate';
 import { LAppSubdelegate } from './lappsubdelegate';
-import { AI_WS } from './LAppAIWebSocket';
+import { AI_WS } from './ai/AiWebSocket';
+import { AI_IDLE } from './ai/AiIdleAnimator';
+import { MICRO_EXPRESSION } from './ai/AiMicroNoise';
 
 interface AIFaceParams {
   [key: string]: number;
@@ -557,43 +559,68 @@ export class LAppModel extends CubismUserModel {
     if (this._breath != null) this._breath.updateParameters(this._model, dt);           // 呼吸起伏
 
     // ==========================================
-    // 唯一的特例：TTS 嘴型绝对控制
+    // AI 空闲动画（后端未控制时让模型自主微动）
     // ==========================================
-    // AI parameter override (head, body, eyes, arms, command queues)
+    AI_IDLE.update(dt);
+
     const idManager = CubismFramework.getIdManager();
     const target = AI_WS.aiFaceParams as Record<string, any>;
+    const touched = AI_WS.backendTouched;
 
-    // Mouth (TTS-driven, fast lerp)
-    const isPlayingAudio = LAppAudioManager.getInstance().getIsPlaying();
+    // ── Layer 0: 微表情噪声（"活气系统"）—— 极小幅连续随机游走 ──
+    const microOffsets = MICRO_EXPRESSION.apply(dt, touched);
+    for (const paramId of Object.keys(microOffsets)) {
+      const id = idManager.getId(paramId);
+      if (id) this._model.setParameterValueById(id, microOffsets[paramId]);
+    }
+
+    // ── AI 参数注入：只设原始目标值，SDK physics 负责平滑过渡 ──
+    // AiIdleAnimator 已写入 head/body 正弦值，这里直接 apply
+
+    // Mouth — TTS 口型同步优先，后端参数覆盖次之
+    const audioMgr = AiAudioManager.getInstance();
+    audioMgr.updateViseme();
+    const isPlayingAudio = audioMgr.getIsPlaying();
     const mb = target["ParamMouthOpenY"];
-    const mouthTarget = mb !== undefined && mb !== null ? mb : (isPlayingAudio ? this._smoothedAI.ParamMouthOpenY : 0);
-    const lerpMouth = 1 - Math.exp(-20.0 * dt);
-    this._smoothedAI.ParamMouthOpenY += (mouthTarget - this._smoothedAI.ParamMouthOpenY) * lerpMouth;
+    const backendMouth = (mb !== undefined && mb !== null);
+
+    if (isPlayingAudio) {
+      // TTS 播放中：viseme 数据驱动口型，×1.4 放大张嘴幅度
+      const visemeMouth = Math.min(1.0, audioMgr.currentViseme.aa * 1.4);
+      const lerpMouth = 1 - Math.exp(-20.0 * dt);
+      this._smoothedAI.ParamMouthOpenY += (visemeMouth - this._smoothedAI.ParamMouthOpenY) * lerpMouth;
+    } else if (backendMouth) {
+      // 后端显式控制口型（无 TTS 时）
+      const lerpMouth = 1 - Math.exp(-20.0 * dt);
+      this._smoothedAI.ParamMouthOpenY += (mb - this._smoothedAI.ParamMouthOpenY) * lerpMouth;
+    } else {
+      // 静默时平滑闭口
+      this._smoothedAI.ParamMouthOpenY *= Math.exp(-8.0 * dt);
+    }
     this._model.setParameterValueById(idManager.getId("ParamMouthOpenY"), this._smoothedAI.ParamMouthOpenY);
 
-    // Head angles (medium lerp)
-    const lerpHead = 1 - Math.exp(-10.0 * dt);
-    for (const key of ["ParamAngleX", "ParamAngleY", "ParamAngleZ", "ParamHairAhoge"]) {
+    // Head / Body — 轻量 lerp（head 无 physics 挂载，需手动平滑，factor=3 约 1s 收敛）
+    const lerpGentle = 1 - Math.exp(-3.0 * dt);
+    for (const key of ["ParamAngleX", "ParamAngleY", "ParamAngleZ",
+                        "ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ",
+                        "ParamAllX", "ParamWaistAngleZ",
+                        "ParamLeftShoulderUp", "ParamRightShoulderUp"]) {
       const id = idManager.getId(key);
       if (!id) continue;
-      const cur = (this._smoothedAI as any)[key] || 0;
-      const tgt = target[key] !== undefined ? target[key] : 0;
-      (this._smoothedAI as any)[key] = cur + (tgt - cur) * lerpHead;
-      this._model.setParameterValueById(id, (this._smoothedAI as any)[key]);
+      const val = target[key];
+      if (val !== undefined && val !== null) {
+        const cur = (this._smoothedAI as any)[key] || 0;
+        (this._smoothedAI as any)[key] = cur + (val - cur) * lerpGentle;
+        this._model.setParameterValueById(id, (this._smoothedAI as any)[key]);
+      }
+    }
+    // Hair — 直接设，.physics3.json 负责头发飘动
+    const idHair = idManager.getId("ParamHairAhoge");
+    if (idHair && target["ParamHairAhoge"] !== undefined) {
+      this._model.setParameterValueById(idHair, target["ParamHairAhoge"]);
     }
 
-    // Body angles (slow lerp)
-    const lerpBody = 1 - Math.exp(-5.0 * dt);
-    for (const key of ["ParamBodyAngleX", "ParamBodyAngleY", "ParamBodyAngleZ"]) {
-      const id = idManager.getId(key);
-      if (!id) continue;
-      const cur = (this._smoothedAI as any)[key] || 0;
-      const tgt = target[key] !== undefined ? target[key] : 0;
-      (this._smoothedAI as any)[key] = cur + (tgt - cur) * lerpBody;
-      this._model.setParameterValueById(id, (this._smoothedAI as any)[key]);
-    }
-
-    // Eye blink (auto-random with AI override)
+    // Eye blink — SDK 眨眼计时器优先，后端显式下发时覆盖
     const idEyeL = idManager.getId("ParamEyeLOpen");
     const idEyeR = idManager.getId("ParamEyeROpen");
     if (idEyeL && idEyeR) {
@@ -605,21 +632,24 @@ export class LAppModel extends CubismUserModel {
         this._blinkDuration = 0.25;
         this._blinkTimer = this._blinkDuration;
       }
-      const eL = target["ParamEyeLOpen"] !== undefined ? target["ParamEyeLOpen"] : blink;
-      const eR = target["ParamEyeROpen"] !== undefined ? target["ParamEyeROpen"] : blink;
-      this._smoothedAI.ParamEyeLOpen = eL;
-      this._smoothedAI.ParamEyeROpen = eR;
+      const backendEye = touched.has("ParamEyeLOpen");
+      const eL = backendEye ? (target["ParamEyeLOpen"] ?? blink) : blink;
+      const eR = backendEye ? (target["ParamEyeROpen"] ?? blink) : blink;
       this._model.setParameterValueById(idEyeL, eL);
       this._model.setParameterValueById(idEyeR, eR);
     }
 
-    // Arm params (direct, no smoothing)
-    for (const key of ["ParamArmLA", "ParamArmRA", "ParamArmLB", "ParamArmRB"]) {
+    // Arm / Shoulder params — 空闲动画/后端均可驱动，有值就 apply
+    // ParamArmAL01/AR01 是 Natori 真实肩部旋转参数
+    for (const key of ["ParamArmAL01", "ParamArmAR01", "ParamArmLA", "ParamArmRA", "ParamArmLB", "ParamArmRB"]) {
       const id = idManager.getId(key);
       if (!id) continue;
-      const val = target[key] !== undefined ? target[key] : 1.0;
-      (this._smoothedAI as any)[key] = val;
-      this._model.setParameterValueById(id, val);
+      const val = target[key];
+      if (val !== undefined && val !== null) {
+        const cur = (this._smoothedAI as any)[key] || 1.0;
+        (this._smoothedAI as any)[key] = cur + (val - cur) * lerpGentle;
+        this._model.setParameterValueById(id, (this._smoothedAI as any)[key]);
+      }
     }
 
     // Consume command queues from AI_WS
@@ -628,7 +658,9 @@ export class LAppModel extends CubismUserModel {
     }
     if (AI_WS.motionQueue.length > 0) {
       const m = AI_WS.motionQueue.shift()!;
-      this.startRandomMotion(m.group, LAppDefine.PriorityNormal);
+      const prio = m.group === 'Idle' ? LAppDefine.PriorityIdle : LAppDefine.PriorityNormal;
+      const onFinish = m.group === 'Idle' ? AI_IDLE.onIdleFinished : undefined;
+      this.startRandomMotion(m.group, prio, onFinish);
     }
 
     this._model.saveParameters();

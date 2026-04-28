@@ -7,7 +7,7 @@
 
 import { LAppDelegate } from './lappdelegate';
 import * as LAppDefine from './lappdefine';
-import { AI_WS } from './LAppAIWebSocket';
+import { AI_WS } from './ai/AiWebSocket';
 /**
  * 浏览器加载后的处理
  */

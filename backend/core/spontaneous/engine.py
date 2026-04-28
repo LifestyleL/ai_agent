@@ -18,35 +18,42 @@ from .interrupt_handler import InterruptHandler, InterruptType
 
 from ..memory.memory_core import MemoryCore
 from ..event.event_bus import event_bus, EventType, Event, event_handler
+import config
+
 class SpontaneousEngine:
     """自驱动引擎主类"""
 
-    def __init__(self, memory_core: MemoryCore, llm=None):
+    def __init__(self, memory_core: MemoryCore, llm=None, goal_tracker=None):
         self.memory_core = memory_core
         self.llm = llm
+        self.goal_tracker = goal_tracker  # GoalTracker 实例（可选）
 
-        # 初始化组件
+        # 初始化组件（注入情绪引擎引用）
+        emotion_engine = memory_core._emotion_engine if hasattr(memory_core, '_emotion_engine') else None
         self.context_reader = ContextReader(memory_core)
-        self.trigger_policy = TriggerPolicy()
+        self.trigger_policy = TriggerPolicy(emotion_engine=emotion_engine)
         self.content_generator = ContentGenerator(llm)
         self.freq_limiter = FreqLimiter()
         self.response_tracker = ResponseTracker()
         self.interrupt_handler = InterruptHandler()
 
-        # 状态
+        # 状态（从全局配置读取）
         self.is_running = False
-        self.check_interval = 60  # 检查间隔（秒）生产环境改为60秒
+        self.check_interval = config.SPONTANEOUS_CHECK_INTERVAL
         self.last_check_time = 0
         self.loop_task: Optional[asyncio.Task] = None
 
         # 连续发言状态
-        self._consecutive_count = 0          # 当前连续发言次数
-        self._consecutive_active = False      # 是否处于连续发言模式
-        self._consecutive_max = 4             # 最大连续次数
-        self._consecutive_stop_prob = 0.3     # 每次发言后停止的概率基数
+        self._consecutive_count = 0
+        self._consecutive_active = False
+        self._consecutive_max = config.SPONTANEOUS_CONSECUTIVE_MAX
+        self._consecutive_stop_prob = config.SPONTANEOUS_CONSECUTIVE_STOP_PROB
 
         # 回调函数
         self.speech_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
+
+        # 心跳日志计数器
+        self._loop_ticks = 0
 
         # 注册事件处理器
         self._setup_event_handlers()
@@ -200,6 +207,9 @@ class SpontaneousEngine:
 
                 # === 情况B：正常沉默检测 ===
                 await self._check_and_trigger()
+                # 情绪基线回归：每次循环温和地向 neutral 靠近
+                if self.trigger_policy._emotion_engine:
+                    self.trigger_policy._emotion_engine.drift()
                 await asyncio.sleep(self.check_interval)
             except asyncio.CancelledError:
                 break
@@ -222,12 +232,28 @@ class SpontaneousEngine:
             return
 
         self.last_check_time = now
+        self._loop_ticks += 1
+
+        # 每10次检查打印心跳
+        if self._loop_ticks % 10 == 0:
+            silence = time.time() - max(
+                self.trigger_policy.last_user_activity,
+                self.trigger_policy.last_spoke_time
+            )
+            print(f"[SpontaneousEngine] 心跳 #{self._loop_ticks}: 沉默 {silence:.0f}s, "
+                  f"触发阈值 {self.trigger_policy.window_silence}s")
 
         # 1. 读取上下文
         context = self.context_reader.build_context_summary()
 
-        # 2. 检查触发策略
-        trigger_result = self.trigger_policy.evaluate(context)
+        # 2. 检查触发策略（V5.0 情绪感知多层触发）
+        has_goal = bool(self.goal_tracker and self.goal_tracker.get_best_goal())
+        short_term_count = context.get("short_term_count", 0)
+        trigger_result = self.trigger_policy.evaluate(
+            context,
+            has_goal=has_goal,
+            short_term_count=short_term_count,
+        )
 
         if not trigger_result["should_trigger"]:
             return
@@ -239,23 +265,33 @@ class SpontaneousEngine:
             print(f"[SpontaneousEngine] 频率限制阻止发言: {', '.join(freq_check['reasons'])}")
             return
 
-        # 4. 生成内容
-        use_llm = trigger_result["priority"] >= 4  # 高优先级使用LLM
-        content_result = await self.content_generator.generate(
-            {**context, "trigger_info": trigger_result},
-            use_llm=use_llm
-        )
+        # 4. 生成内容（优先使用 GoalTracker 目标驱动）
+        content_result = None
+
+        if self.goal_tracker and trigger_result["priority"] >= 3:
+            best_goal = self.goal_tracker.get_best_goal()
+            if best_goal:
+                print(f"[SpontaneousEngine] 尝试目标驱动发言: {best_goal[:60]}...")
+                goal_text = await self.content_generator.generate_from_goal(best_goal, context)
+                if goal_text:
+                    content_result = {
+                        "text": goal_text,
+                        "source": "goal_driven",
+                        "emotion": "neutral",
+                        "action": "",
+                        "priority": trigger_result["priority"]
+                    }
+
+        if content_result is None:
+            use_llm = trigger_result["priority"] >= 4  # 高优先级使用LLM
+            content_result = await self.content_generator.generate(
+                {**context, "trigger_info": trigger_result},
+                use_llm=use_llm
+            )
 
         if not content_result["text"]:
             print("[SpontaneousEngine] 内容生成失败")
             return
-
-        # 5. 如果是第一次触发（将进入连续模式），调整内容长度
-        # 注意：此时 _consecutive_count 为 0，_consecutive_active 为 False
-        if not self._consecutive_active and self._consecutive_count == 0:
-            # 第一次发言，如果内容太长就截短
-            if len(content_result["text"]) > 15:
-                content_result["text"] = content_result["text"][:15].rstrip("，。、") + "..."
 
         # 5. 准备发言上下文
         speech_context = {
@@ -327,17 +363,7 @@ class SpontaneousEngine:
             print("[SpontaneousEngine] [连续发言] 内容生成失败")
             return False
 
-        # 4. 根据连续次数调整内容长度
-        if self._consecutive_count == 0:
-            # 第一次，如果内容太长就截短
-            if len(content_result["text"]) > 15:
-                content_result["text"] = content_result["text"][:15].rstrip("，。、") + "..."
-        elif self._consecutive_count >= 2:
-            # 第三次及以上，可以尝试添加话题引导
-            # 这里暂时不做处理，content_generator可以自行处理
-            pass
-
-        # 5. 准备发言上下文
+        # 4. 准备发言上下文
         speech_context = {
             "source": content_result["source"] + "_consecutive",
             "priority": 3,
@@ -427,19 +453,16 @@ class SpontaneousEngine:
             }
         }
 
-    def manual_trigger(self) -> bool:
+    async def manual_trigger_async(self) -> bool:
         """
-        手动触发主动发言（用于测试或特殊场景）
+        手动触发主动发言（异步版，在已有事件循环中调用）
 
         Returns:
             bool: 是否成功触发
         """
-        print("[SpontaneousEngine] 手动触发主动发言")
+        print("[SpontaneousEngine] 手动触发主动发言 (async)")
 
-        # 读取上下文
         context = self.context_reader.build_context_summary()
-
-        # 强制触发结果
         trigger_result = {
             "should_trigger": True,
             "silence_duration": self.trigger_policy._calculate_silence_duration(),
@@ -448,18 +471,15 @@ class SpontaneousEngine:
             "details": {"manual": True}
         }
 
-        # 跳过频率限制检查（因为是手动触发）
-        # 生成内容
-        content_result = asyncio.run(self.content_generator.generate(
+        content_result = await self.content_generator.generate(
             {**context, "trigger_info": trigger_result},
             use_llm=True
-        ))
+        )
 
         if not content_result["text"]:
             print("[SpontaneousEngine] 手动触发内容生成失败")
             return False
 
-        # 调用回调
         speech_context = {
             "source": "manual",
             "priority": 5,
@@ -472,9 +492,32 @@ class SpontaneousEngine:
 
         if self.speech_callback:
             self.speech_callback(content_result["text"], speech_context)
-            # 记录手动触发的发言频率
-            self.freq_limiter.record_spoke()
+            # 不记录 freq_limiter，避免测试用的 /trigger 消耗频率配额
             return True
         else:
             print("[SpontaneousEngine] 手动触发失败: 未设置发言回调")
             return False
+
+    def manual_trigger(self) -> bool:
+        """
+        手动触发主动发言（同步版，用于测试或特殊场景）
+        在线程中运行，创建新事件循环执行异步逻辑。
+        """
+        print("[SpontaneousEngine] 手动触发主动发言")
+
+        def _run():
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                return loop.run_until_complete(self.manual_trigger_async())
+            finally:
+                loop.close()
+
+        import concurrent.futures
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(_run)
+            try:
+                return future.result(timeout=30)
+            except concurrent.futures.TimeoutError:
+                print("[SpontaneousEngine] 手动触发超时")
+                return False

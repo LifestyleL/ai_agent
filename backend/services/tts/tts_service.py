@@ -78,11 +78,9 @@ class TTSService:
 
         self._stop_heartbeat = True
         if self._heartbeat_thread.is_alive():
-            self._heartbeat_thread.join(timeout=5.0)
+            self._heartbeat_thread.join(timeout=1.0)
             if self._heartbeat_thread.is_alive():
-                print("[WARN] [TTS] 心跳线程未能正常停止")
-            else:
-                print("[HEARTBEAT] [TTS] 心跳线程已停止")
+                print("[WARN] [TTS] 心跳线程还在sleep中，daemon线程将随进程退出")
         self._heartbeat_thread = None
 
     def _heartbeat_loop(self):
@@ -111,13 +109,25 @@ class TTSService:
                 # 继续循环，下次再试
 
     def _cleanup(self):
-        """清理WebSocket连接（安全，可多次调用）"""
+        """清理所有WebSocket连接（安全，可多次调用）"""
         # 防止重复清理
         if hasattr(self, '_cleaned_up') and self._cleaned_up:
             return
 
         try:
-            if hasattr(self, '_tts') and self._tts:
+            # 关闭所有追踪到的连接（不仅仅是最后一个）
+            all_conns = getattr(self, '_all_connections', [])
+            if all_conns:
+                print(f"[CONN] [TTS] 正在关闭 {len(all_conns)} 个WebSocket连接...")
+                for conn in list(all_conns):
+                    try:
+                        conn.close()
+                    except Exception as e:
+                        print(f"[WARN]  [TTS] 关闭连接时出错: {e}")
+                self._all_connections = []
+                print("[OK] [TTS] 所有WebSocket连接已关闭")
+            elif hasattr(self, '_tts') and self._tts:
+                # 兜底：如果没有追踪列表，关闭当前连接
                 try:
                     print("[CONN] [TTS] 正在关闭WebSocket连接...")
                     self._tts.close()
@@ -125,9 +135,10 @@ class TTSService:
                 except Exception as e:
                     print(f"[WARN]  [TTS] 关闭连接时出错: {e}")
                 finally:
-                    self._is_connected = False
                     self._tts = None
         finally:
+            self._is_connected = False
+            self._tts = None
             # 停止心跳线程
             if hasattr(self, '_stop_heartbeat'):
                 self._stop_heartbeat_thread()
@@ -205,16 +216,28 @@ class TTSService:
 
         self._callback = ReusableCallback(self)
 
+        # 关闭旧连接（如果有的话，防止连接泄露）
+        if hasattr(self, '_tts') and self._tts:
+            try:
+                self._tts.close()
+            except Exception:
+                pass
+
         # 在创建实例前确保API密钥已设置（与成功测试程序一致）
         dashscope.api_key = TTSConfig.API_KEY
         print(f"[KEY] [TTS] 使用API密钥: {TTSConfig.API_KEY[:8]}...")
 
         # 使用配置中的模型和音色
-        self._tts = QwenTtsRealtime(
-            model=TTSConfig.MODEL,  # 从配置读取
+        new_tts = QwenTtsRealtime(
+            model=TTSConfig.MODEL,
             callback=self._callback,
             url=TTSConfig.BASE_URL
         )
+        # 追踪所有连接，防止泄露
+        if not hasattr(self, '_all_connections'):
+            self._all_connections = []
+        self._all_connections.append(new_tts)
+        self._tts = new_tts
 
         try:
             # 尝试连接，使用指数退避重试
@@ -339,7 +362,6 @@ class TTSService:
             )
 
             self._tts.append_text(text)
-            time.sleep(0.1)  # 给服务器一点处理时间
             self._tts.finish()
 
             # 4. 等待完成

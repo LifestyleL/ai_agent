@@ -59,6 +59,48 @@ AGENT_IDLE_INTERVAL_MAX = get("agent", "idle_interval_max", default=65)
 MAX_CONCURRENT_TTS = get("agent", "max_concurrent_tts", default=1)
 MAX_STEPS = get("agent", "max_steps", default=8)
 
+# 自驱动引擎配置
+SPONTANEOUS_ENABLED = get("spontaneous", "enabled", default=True)
+SPONTANEOUS_CHECK_INTERVAL = get("spontaneous", "check_interval", default=60)
+SPONTANEOUS_MIN_SILENCE = get("spontaneous", "min_silence", default=600)
+SPONTANEOUS_MIN_INTERVAL = get("spontaneous", "min_interval", default=300)
+SPONTANEOUS_MAX_PER_HOUR = get("spontaneous", "max_per_hour", default=3)
+SPONTANEOUS_MAX_PER_DAY = get("spontaneous", "max_per_day", default=10)
+SPONTANEOUS_COOL_DOWN_AFTER_REJECT = get("spontaneous", "cool_down_after_reject", default=120)
+SPONTANEOUS_CONSECUTIVE_MAX = get("spontaneous", "consecutive_max", default=4)
+SPONTANEOUS_CONSECUTIVE_STOP_PROB = get("spontaneous", "consecutive_stop_prob", default=0.3)
+SPONTANEOUS_USE_LLM_THRESHOLD = get("spontaneous", "use_llm_threshold", default=3)
+SPONTANEOUS_NIGHT_START = get("spontaneous", "night_start", default=2)
+SPONTANEOUS_NIGHT_END = get("spontaneous", "night_end", default=5)
+SPONTANEOUS_GOAL_UPDATE_MIN_TURNS = get("spontaneous", "goal_update_min_turns", default=2)
+# V5.0 多层触发窗口
+_wc = get("spontaneous", "window_continuation", default=[8, 30])
+SPONTANEOUS_WINDOW_CONTINUATION = (int(_wc[0]), int(_wc[1]))
+_we = get("spontaneous", "window_emotional", default=[30, 120])
+SPONTANEOUS_WINDOW_EMOTIONAL = (int(_we[0]), int(_we[1]))
+_wg = get("spontaneous", "window_goal", default=[60, 300])
+SPONTANEOUS_WINDOW_GOAL = (int(_wg[0]), int(_wg[1]))
+
+# 情绪引擎配置
+EMOTION_SMOOTHING_FACTOR = get("emotion", "smoothing_factor", default=0.7)
+EMOTION_DECAY_FACTOR = get("emotion", "decay_factor", default=0.9)
+EMOTION_SWITCH_THRESHOLD = get("emotion", "switch_threshold", default=2)
+
+# V5.0 卡片记忆配置
+CARD_ENABLED = get("memory", "card", "enabled", default=True)
+CARD_MAX_CARDS = get("memory", "card", "max_cards", default=2000)
+CARD_CREATE_INTERVAL = get("memory", "card", "create_interval", default=1)
+CARD_LINK_THRESHOLD = get("memory", "card", "link_threshold", default=0.25)
+CARD_BFS_MAX_DEPTH = get("memory", "card", "bfs_max_depth", default=3)
+CARD_BFS_LIMIT = get("memory", "card", "bfs_limit", default=10)
+CARD_RECENCY_HALFLIFE_DAYS = get("memory", "card", "recency_halflife_days", default=7)
+CARD_TIER1_AGE_DAYS = get("memory", "card", "tier1_age_days", default=3)
+CARD_TIER2_AGE_DAYS = get("memory", "card", "tier2_age_days", default=30)
+CARD_COMPRESSION_INTERVAL_HOURS = get("memory", "card", "compression_interval_hours", default=6)
+CARD_KEYWORD_SCORE_WEIGHT = get("memory", "card", "keyword_score_weight", default=0.5)
+CARD_RECENCY_SCORE_WEIGHT = get("memory", "card", "recency_score_weight", default=0.3)
+CARD_IMPORTANCE_SCORE_WEIGHT = get("memory", "card", "importance_score_weight", default=0.2)
+
 # 调试模式
 DEBUG = get("app", "debug", default=True)
 

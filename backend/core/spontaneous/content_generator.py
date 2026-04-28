@@ -176,6 +176,40 @@ class ContentGenerator:
             print(f"[ContentGenerator] LLM生成失败: {e}")
         return None
 
+    async def generate_from_goal(self, goal: str, context: Dict[str, Any]) -> Optional[str]:
+        """基于对话目标生成引导性发言（GoalTracker 驱动）"""
+        time_ctx = context.get("time_context", {})
+        time_of_day = time_ctx.get("time_of_day", "")
+        short_term = context.get("raw_short_term", [])
+
+        recent_hint = ""
+        if short_term:
+            last_msgs = [m.get("content", "") for m in short_term[-4:]]
+            recent_hint = "\n".join(last_msgs[-2:]) if last_msgs else ""
+
+        prompt = f"""你是yume，一个有点傲娇、带点毒舌的AI。现在是{time_of_day}。
+你有一个想聊的方向：{goal}
+
+{f"最近的对话：{recent_hint}" if recent_hint else ""}
+
+请生成一句简短、自然的话来引导对话朝这个方向走。
+要求：
+1. 自然，不要直接说"我们来聊XX"，要像一个朋友随口提起
+2. 简短（10-25字）
+3. 符合yume的傲娇毒舌人设
+4. 如果最近对话已经涉及了这个方向，就延续下去
+5. 不要用括号或解释
+
+直接输出要说的话，不要解释。"""
+
+        try:
+            reply_text = await self.llm.ask_async(prompt)
+            if reply_text:
+                return reply_text.strip()
+        except Exception as e:
+            print(f"[ContentGenerator] 目标生成失败: {e}")
+        return None
+
     def _build_llm_prompt(self, context: Dict[str, Any]) -> str:
         """构建LLM提示词"""
         time_ctx = context.get("time_context", {})

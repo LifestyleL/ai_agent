@@ -224,7 +224,7 @@ class Voice:
         recent_monologues = "（无历史独白）"
         recent_chat = "（无近期对话）"
         try:
-            monologue_raw = MemoryCore.load_files(["mood_blank.md"]) or ""
+            monologue_raw = MemoryCore.load_files(["core/mood_blank.md"]) or ""
             if monologue_raw.strip():
                 lines = [line.strip() for line in monologue_raw.split('\n') if line.strip()]
                 recent_monologues = "\n".join(lines[-10:]) if lines else "（无历史独白）"
@@ -262,7 +262,7 @@ class Voice:
             pass
 
         recent_monologues, recent_chat = self._get_recent_context()
-        persona = MemoryCore.load_files(["personality.md"]) or ""
+        persona = MemoryCore.load_files(["core/personality.md"]) or ""
 
 
         # 第三步：回退到单模型生成（原有逻辑）

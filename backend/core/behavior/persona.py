@@ -26,7 +26,7 @@ class Persona:
         self.name = "yume"
 
         # 加载现有的人格文件
-        self.personality_raw = MemoryCore.load_files(["personality.md"]) or ""
+        self.personality_raw = MemoryCore.load_files(["core/personality.md"]) or ""
 
         # 从原始人格文件中提取基本信息
         self._parse_personality_file()

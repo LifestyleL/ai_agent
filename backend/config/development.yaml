@@ -19,3 +19,10 @@ live2d:
 
 agent:
   idle_timeout: 120 # 开发时空闲时间更长
+
+# 开发环境：降低自驱动阈值以便测试
+spontaneous:
+  min_silence: 60     # 1分钟即可触发（生产环境10分钟）
+  min_interval: 60    # 1分钟最小间隔（生产环境5分钟）
+  max_per_hour: 10    # 每小时最多10次（生产环境3次）
+  check_interval: 30  # 30秒检查一次（生产环境60秒）

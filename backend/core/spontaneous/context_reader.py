@@ -17,34 +17,18 @@ class ContextReader:
 
     def read_short_term(self, max_entries: int = 10) -> List[Dict[str, Any]]:
         """读取短期记忆（最近对话）"""
-        try:
-            # [V3] 短期记忆存储在 short_term.json
-            memory_dir = Path(__file__).parent.parent.parent / "agent_memory"
-            short_term_path = memory_dir / "short_term.json"
-
-            if not short_term_path.exists():
-                return []
-
-            with open(short_term_path, 'r', encoding='utf-8') as f:
-                data = json.load(f)
-
-            dialogues = data.get('dialogues', [])
-            return dialogues[-max_entries:] if dialogues else []
-
-        except Exception as e:
-            print(f"[ContextReader] 读取短期记忆失败: {e}")
+        history = self.memory_core.short_term_history
+        if not history:
             return []
+        return history[-max_entries:]
 
     def read_long_term_summary(self) -> str:
-        """读取长期记忆的总结（用于了解用户偏好）"""
+        """读取长期记忆的总结（从卡片存储）"""
         try:
-            # 尝试读取记忆文件
-            memories_content = self.memory_core.load_files(["memories.md"])
-            if memories_content:
-                # 只取最近几行
-                lines = memories_content.strip().split('\n')
-                recent_lines = [line for line in lines if line.strip()][-20:]
-                return "\n".join(recent_lines)
+            recent = self.memory_core._card_store.get_recent_cards(5)
+            if recent:
+                lines = [f"[{c.timestamp[:10]}] {c.topic}: {c.content[:100]}" for c in recent]
+                return "\n".join(lines)
             return ""
         except Exception as e:
             print(f"[ContextReader] 读取长期记忆失败: {e}")

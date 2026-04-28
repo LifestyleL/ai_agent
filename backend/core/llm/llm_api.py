@@ -186,3 +186,52 @@ class LLMAPI:
             return result["choices"][0]["message"]["content"].strip()
         except:
             return "解析回复失败"
+
+    async def chat_stream_async(self,
+                                 messages: List[Dict[str, str]],
+                                 temperature: float = 0.7,
+                                 functions: Optional[List[Dict]] = None
+                                 ):
+        """异步流式聊天，逐 token yield"""
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": True
+        }
+        if functions:
+            payload["functions"] = functions
+
+        try:
+            async with httpx.AsyncClient(timeout=30) as client:
+                async with client.stream(
+                    "POST",
+                    f"{self.base_url}/chat/completions",
+                    headers=headers,
+                    json=payload
+                ) as response:
+                    response.raise_for_status()
+                    async for line in response.aiter_lines():
+                        if line:
+                            if line.startswith('data: '):
+                                data = line[6:]
+                                if data == '[DONE]':
+                                    return
+                                try:
+                                    chunk = json.loads(data)
+                                    if 'choices' in chunk and len(chunk['choices']) > 0:
+                                        delta = chunk['choices'][0].get('delta', {})
+                                        if 'content' in delta and delta['content']:
+                                            yield delta['content']
+                                except json.JSONDecodeError:
+                                    continue
+        except httpx.TimeoutException:
+            yield "[ERROR] 请求超时"
+        except httpx.HTTPStatusError as e:
+            yield f"[ERROR] HTTP错误: {e}"
+        except Exception as e:
+            yield f"[ERROR] {str(e)}"

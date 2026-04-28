@@ -92,18 +92,19 @@ class WSServer:
 
     async def _queue_consumer(self):
         loop = asyncio.get_running_loop()
+        print("[WS] 队列消费者已启动")
         while True:
             try:
                 data = await loop.run_in_executor(None, self.send_queue.get)
                 if data.get("type") == "TTS_AUDIO":
-                    print("[发送] [WS] 队列成功吐出 TTS 音频包，准备发给前端！")
+                    print(f"[发送] [WS] 队列成功吐出 TTS 音频包 ({len(data.get('audio_base64',''))}B base64)，准备发给前端！")
                 else:
-                    # 添加参数发送调试日志
-                    # print(f"[发送] [WS] 发送参数到前端: {json.dumps(data)[:200]}")
                     pass
                 await self._send(data)
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[ERROR] [WS] 队列消费者异常: {e}")
+                import traceback
+                traceback.print_exc()
 
     def _infer_channel_from_data(self, data):
         """

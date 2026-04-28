@@ -26,7 +26,6 @@ from core.behavior.drive_model import get_drive_model
 from core.behavior.persona import get_persona
 from core.behavior import instinct_handler
 from core.behavior import mumble_handler
-from core.behavior import autonomous_worker
 from typing import Dict, Any
 
 
@@ -98,12 +97,25 @@ class YumeDriver:
 
         instinct_handler.init_instinct_handler(self.llm_speaker)
 
+        # --- 对话目标追踪器（后台 LLM 摘要 + 目标提取） ---
+        try:
+            from core.spontaneous.goal_tracker import GoalTracker
+            self.goal_tracker = GoalTracker(
+                memory_core=self.memory_core,
+                llm_thinker=self.llm_thinker
+            )
+            print("[GoalTracker] 对话目标追踪器初始化成功")
+        except Exception as e:
+            print(f"[GoalTracker] 初始化失败: {e}")
+            self.goal_tracker = None
+
         # --- 自驱动引擎 ---
         try:
             from core.spontaneous.engine import SpontaneousEngine
             self.spontaneous_engine = SpontaneousEngine(
                 memory_core=self.memory_core,
-                llm=self.llm_speaker
+                llm=self.llm_speaker,
+                goal_tracker=self.goal_tracker
             )
             self.spontaneous_engine.set_speech_callback(self._on_spontaneous_speech)
             print("[SpontaneousEngine] 自驱动引擎初始化成功")
@@ -201,6 +213,17 @@ class YumeDriver:
             except Exception as e:
                 print(f"[SpontaneousEngine] 停止失败: {e}")
         self.tts_manager.shutdown()
+        # 强刷短期记忆到磁盘
+        try:
+            self.memory_core.flush()
+        except Exception as e:
+            print(f"[WARN] 记忆刷盘失败: {e}")
+        # 等待记忆写入线程完成（最多 3 秒）
+        for t in getattr(self.memory_core, '_write_threads', []):
+            try:
+                t.join(timeout=3)
+            except Exception:
+                pass
         try:
             if hasattr(self, 'voice') and hasattr(self.voice, 'tts'):
                 self.voice.tts.close()
@@ -304,6 +327,9 @@ class YumeDriver:
         self.tts_manager.on_spontaneous_speech(text, context)
         emotion = context.get("emotion", "neutral")
         self.frontend.send_live2d_cmd("emotion", emotion=emotion)
+        # 存入短期记忆，避免 AI 说完就"忘记自己说过什么"
+        if self.memory_core:
+            self.memory_core.add_short_term("assistant", text)
         if self.spontaneous_engine:
             self.spontaneous_engine.on_ai_spoke(text)
 

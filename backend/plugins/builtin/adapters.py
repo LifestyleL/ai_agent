@@ -1,12 +1,6 @@
 from typing import Dict, Any
-from backend.plugins.base_tool import BaseTool
-# 导入原有的工具调用函数
-try:
-    from core.agent.agent_brain import call_tool
-except ImportError:
-    # 备用：定义空函数，避免导入失败
-    def call_tool(tool_name, params, llm):
-        return f"错误：无法导入 call_tool，工具 {tool_name} 无法执行"
+from plugins.base_tool import BaseTool
+from core.memory.memory_core import MemoryCore
 
 
 class ReadFileAdapter(BaseTool):
@@ -19,32 +13,19 @@ class ReadFileAdapter(BaseTool):
         pass
 
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """
-        标准接口实现。
-        通过原有的 call_tool 函数执行工具。
-        返回值必须是 dict，符合旧代码的预期。
-        """
-        # 提取参数
         params = {}
         if "filenames" in kwargs:
             params["filenames"] = kwargs["filenames"]
         elif "files" in kwargs:
             params["files"] = kwargs["files"]
-
-        # 兼容原有参数格式
         if "filename" in kwargs:
             params["files"] = [kwargs["filename"]]
 
-        llm = kwargs.get("llm")
-
-        # 调用原有工具逻辑
-        result = call_tool(self.name, params, llm)
-
-        # 确保返回字典
+        files = params.get("filenames", params.get("files", []))
+        result = MemoryCore.tool_read_file(files)
         if isinstance(result, dict):
             return result
-        else:
-            return {"result": result}
+        return {"result": result}
 
 
 class WriteFileAdapter(BaseTool):
@@ -57,26 +38,12 @@ class WriteFileAdapter(BaseTool):
         pass
 
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """
-        标准接口实现。
-        通过原有的 call_tool 函数执行工具。
-        """
-        # 提取参数
-        params = {}
-        if "filename" in kwargs:
-            params["filename"] = kwargs["filename"]
-        if "content" in kwargs:
-            params["content"] = kwargs["content"]
-
-        llm = kwargs.get("llm")
-
-        # 调用原有工具逻辑
-        result = call_tool(self.name, params, llm)
-
+        filename = kwargs.get("filename", "")
+        content = kwargs.get("content", "")
+        result = MemoryCore.tool_write_file(filename, content)
         if isinstance(result, dict):
             return result
-        else:
-            return {"result": result}
+        return {"result": result}
 
 
 class SearchMemoryAdapter(BaseTool):
@@ -89,30 +56,14 @@ class SearchMemoryAdapter(BaseTool):
         pass
 
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """
-        标准接口实现。
-        通过原有的 call_tool 函数执行工具。
-        返回值必须是 dict，符合旧代码的预期。
-        """
-        # 提取参数
-        params = {}
-        if "keyword" in kwargs:
-            params["keyword"] = kwargs["keyword"]
-        if "target_date" in kwargs:
-            params["target_date"] = kwargs["target_date"]
-        if "limit" in kwargs:
-            params["limit"] = kwargs.get("limit", 5)
-
+        keyword = kwargs.get("keyword", "")
+        target_date = kwargs.get("target_date")
+        limit = kwargs.get("limit", 5)
         llm = kwargs.get("llm")
-
-        # 调用原有工具逻辑
-        result = call_tool(self.name, params, llm)
-
-        # 确保返回字典
+        result = MemoryCore.tool_search_memory(keyword=keyword, llm=llm)
         if isinstance(result, dict):
             return result
-        else:
-            return {"result": result}
+        return {"result": result}
 
 
 class SummarizeArchiveAdapter(BaseTool):
@@ -125,26 +76,12 @@ class SummarizeArchiveAdapter(BaseTool):
         pass
 
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """
-        标准接口实现。
-        通过原有的 call_tool 函数执行工具。
-        返回值必须是 dict，符合旧代码的预期。
-        """
-        # 提取参数
-        params = {}
-        if "max_lines" in kwargs:
-            params["max_lines"] = kwargs["max_lines"]
-
+        max_lines = kwargs.get("max_lines", 50)
         llm = kwargs.get("llm")
-
-        # 调用原有工具逻辑
-        result = call_tool(self.name, params, llm)
-
-        # 确保返回字典
+        result = MemoryCore.tool_summarize_and_archive(max_lines=max_lines, llm=llm)
         if isinstance(result, dict):
             return result
-        else:
-            return {"result": result}
+        return {"result": result}
 
 
 class WriteDiaryAdapter(BaseTool):
@@ -157,23 +94,9 @@ class WriteDiaryAdapter(BaseTool):
         pass
 
     def execute(self, **kwargs) -> Dict[str, Any]:
-        """
-        标准接口实现。
-        通过原有的 call_tool 函数执行工具。
-        返回值必须是 dict，符合旧代码的预期。
-        """
-        # 提取参数
-        params = {}
-        if "target_date" in kwargs:
-            params["target_date"] = kwargs["target_date"]
-
+        target_date = kwargs.get("target_date")
         llm = kwargs.get("llm")
-
-        # 调用原有工具逻辑
-        result = call_tool(self.name, params, llm)
-
-        # 确保返回字典
+        result = MemoryCore.tool_write_diary(target_date=target_date, llm=llm)
         if isinstance(result, dict):
             return result
-        else:
-            return {"result": result}
+        return {"result": result}

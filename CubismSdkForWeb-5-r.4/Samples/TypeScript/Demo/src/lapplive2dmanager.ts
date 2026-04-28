@@ -189,13 +189,11 @@ export class LAppLive2DManager {
   private _sceneIndex: number; // 表示するシーンのインデックス値
 
   // モーション再生開始のコールバック関数
-  beganMotion = (self: ACubismMotion): void => {
-    LAppPal.printMessage('Motion Began:');
-    console.log(self);
+  beganMotion = (_self: ACubismMotion): void => {
+    // Idle 动作由 AiIdleAnimator 定时循环，静音日志避免刷屏
   };
   // モーション再生終了のコールバック関数
-  finishedMotion = (self: ACubismMotion): void => {
-    LAppPal.printMessage('Motion Finished:');
-    console.log(self);
+  finishedMotion = (_self: ACubismMotion): void => {
+    // Idle 动作由 AiIdleAnimator 定时循环，静音日志避免刷屏
   };
 }

@@ -6,22 +6,22 @@ import time
 from collections import deque
 from datetime import datetime, timedelta
 from typing import Dict, Any
+import config
 
 
 class FreqLimiter:
     """频率限制器，确保主动发言不会过于频繁"""
 
     def __init__(self):
-        self.history = deque(maxlen=20)  # 最近20次发言时间戳
+        self.history = deque(maxlen=20)
         self.last_attempt_time = 0
-        self.consecutive_rejects = 0  # 连续拒绝次数
+        self.consecutive_rejects = 0
 
-        # 频率限制规则（生产环境参数）
         self.rules = {
-            "min_interval": 300,  # 最小间隔300秒（5分钟）
-            "max_per_hour": 3,    # 每小时最多3次
-            "max_per_day": 10,    # 每天最多10次
-            "cool_down_after_reject": 120,  # 被拒绝后冷却120秒
+            "min_interval": config.SPONTANEOUS_MIN_INTERVAL,
+            "max_per_hour": config.SPONTANEOUS_MAX_PER_HOUR,
+            "max_per_day": config.SPONTANEOUS_MAX_PER_DAY,
+            "cool_down_after_reject": config.SPONTANEOUS_COOL_DOWN_AFTER_REJECT,
         }
 
     def record_spoke(self):
@@ -123,7 +123,7 @@ class FreqLimiter:
 
         # 5. 特殊规则：深夜限制
         hour = datetime.now().hour
-        if 2 <= hour < 5:  # 凌晨2-5点
+        if config.SPONTANEOUS_NIGHT_START <= hour < config.SPONTANEOUS_NIGHT_END:
             if priority < 4:  # 非高优先级不发言
                 reasons.append(f"凌晨{hour}点限制发言 (需优先级≥4)")
                 stats["night_limit"] = 1

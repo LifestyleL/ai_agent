@@ -55,23 +55,54 @@ memory:
   short_term_max_tokens: 4096
   long_term_summary_interval: 10 # 每10轮对话总结一次
   auto_diary: true
-  # V3.0 记忆系统增强配置
   short_term_capacity_base: 15 # 短期记忆基础容量
   short_term_capacity_dynamic: true # 是否启用动态容量调整
   short_term_capacity_max: 30 # 动态调整最大容量
-  enable_vector_memory: false # 是否启用向量记忆模块（V3.0暂不启用）
-  forgetting_strategy: "importance_based" # 遗忘策略：importance_based, time_based, hybrid
-  forgetting_max_capacity: 2000 # 最大记忆碎片容量
-  forgetting_aggressiveness: 0.5 # 遗忘激进程度 0.0-1.0
-  enable_wal_logging: true # 是否启用WAL日志保证一致性
-  short_term_history_tokens: 1500 # 短期历史记录最大token预算（粗略估计）
-  # 深度记忆配置
-  deep_memory:
-    max_fragments: 2000 # 最大碎片数量
-    embedding_model: "all-MiniLM-L6-v2" # 嵌入模型
-    emotion_labels: ["平静", "开心", "难过", "烦躁"] # 情绪标签映射
+  enable_vector_memory: false # 是否启用向量记忆模块（暂不启用）
+  short_term_history_tokens: 1500 # 短期历史记录最大token预算
+  # V5.0 卡片记忆配置
+  card:
+    enabled: true
+    max_cards: 2000              # 最大卡片数量
+    create_interval: 1           # 每 N 轮对话创建一张卡片
+    link_threshold: 0.25         # 自动链接最低分数
+    bfs_max_depth: 3             # BFS 检索最大深度
+    bfs_limit: 10                # BFS 检索返回上限
+    recency_halflife_days: 7     # 时间衰减半衰期
+    tier1_age_days: 3            # Tier 0→1 压缩天数
+    tier2_age_days: 30           # Tier 1→2 压缩天数
+    compression_interval_hours: 6 # 压缩检查间隔
+    keyword_score_weight: 0.5
+    recency_score_weight: 0.3
+    importance_score_weight: 0.2
 
 agent:
   idle_timeout: 60 # 秒，空闲多久触发独白
   max_concurrent_tts: 1 # 最大并发TTS数
   max_steps: 8 # 工具调用最大步数
+
+# 自驱动引擎配置
+spontaneous:
+  enabled: true
+  check_interval: 60            # 检查间隔（秒）
+  min_silence: 600              # 最小沉默时长（秒），默认10分钟
+  min_interval: 300             # 两次发言最小间隔（秒），5分钟
+  max_per_hour: 3               # 每小时最大发言次数
+  max_per_day: 10               # 每天最大发言次数
+  cool_down_after_reject: 120   # 被拒绝后冷却（秒）
+  consecutive_max: 4            # 最大连续发言次数
+  consecutive_stop_prob: 0.3    # 连续发言停止概率基数
+  use_llm_threshold: 3          # 使用LLM生成的最低优先级
+  night_start: 2                # 深夜开始时间（24h）
+  night_end: 5                  # 深夜结束时间（24h）
+  goal_update_min_turns: 2      # 至少隔N轮对话才更新目标
+  # V5.0 多层触发窗口（秒）
+  window_continuation: [8, 30]   # 对话延续层窗口 [min, max]
+  window_emotional: [30, 120]    # 情绪冲动层窗口
+  window_goal: [60, 300]         # 目标驱动层窗口
+
+# 情绪引擎配置
+emotion:
+  smoothing_factor: 0.7         # 强度平滑因子（旧权重 0.7）
+  decay_factor: 0.9             # 自然衰减因子
+  switch_threshold: 2           # 类型切换阈值（差值≥此值切换）
