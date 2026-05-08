@@ -38,6 +38,7 @@ class MessageRouter:
             "animation": self._handle_animation_channel,
             "audio": self._handle_audio_channel,
             "control": self._handle_control_channel,
+            "vision": self._handle_vision_channel,
         }
         self._initialized = True
 
@@ -143,6 +144,8 @@ class MessageRouter:
         # 优先检查 params（对于 JSON-RPC 标准格式）
         if "type" in params and params["type"] == "TTS_TEST":
             return "audio"
+        elif params.get("type") in ("ASR_AUDIO", "ASR_CONTROL", "ASR_PARTIAL"):
+            return "audio"
         elif params.get("type") == "PARAMS":
             return "animation"
         elif params.get("signal") is not None:
@@ -152,6 +155,8 @@ class MessageRouter:
 
         # 降级检查 raw_data（对于包装消息或旧格式）
         if "type" in raw_data and raw_data["type"] == "TTS_TEST":
+            return "audio"
+        elif raw_data.get("type") in ("ASR_AUDIO", "ASR_CONTROL", "ASR_PARTIAL"):
             return "audio"
         elif raw_data.get("type") == "PARAMS":
             return "animation"
@@ -236,6 +241,37 @@ class MessageRouter:
             # 启动后台任务
             self.loop.create_task(synthesize_and_send())
             return True
+
+        # 处理 ASR 音频帧
+        if params.get("type") == "ASR_AUDIO":
+            audio_b64 = params.get("audio_base64", "")
+            if not audio_b64:
+                return False
+            try:
+                pcm_bytes = base64.b64decode(audio_b64)
+                recognizer = self.ws_server.speech_recognizer
+                if recognizer:
+                    self.loop.create_task(recognizer.send_audio(pcm_bytes))
+                else:
+                    print("[ASR] SpeechRecognizer 未初始化")
+            except Exception as e:
+                print(f"[ASR] 音频帧处理失败: {e}")
+            return True
+
+        # 处理 ASR 控制消息
+        if params.get("type") == "ASR_CONTROL":
+            action = params.get("action", "")
+            recognizer = self.ws_server.speech_recognizer
+            if not recognizer:
+                print("[ASR] SpeechRecognizer 未初始化")
+                return False
+            if action == "start":
+                self.loop.create_task(recognizer.start_session())
+                print("[ASR] 会话已启动")
+            elif action == "stop":
+                self.loop.create_task(recognizer.stop_session())
+                print("[ASR] 会话已停止")
+            return True
         else:
             logger.debug(f"音频通道收到消息: {params}")
             return False
@@ -296,7 +332,41 @@ class MessageRouter:
                 logger.error(f"用户输入处理失败: {e}")
                 return False
 
+        # 处理打断指令
+        if params.get("type") == "INTERRUPT":
+            try:
+                print("[INTERRUPT] 收到前端打断指令")
+                if self.ws_server.driver:
+                    self.ws_server.driver.interrupt_tts()
+                return True
+            except Exception as e:
+                logger.error(f"打断处理失败: {e}")
+                return False
+
         logger.debug(f"控制通道收到消息: {params}")
+        return False
+
+    def _handle_vision_channel(self, parsed_message: Dict[str, Any], websocket) -> bool:
+        """
+        处理视觉通道消息
+        前端 → 后端：SCREENSHOT_DATA（base64 截图）
+        """
+        params = parsed_message.get("params", {})
+
+        if params.get("type") == "SCREENSHOT_DATA":
+            image_base64 = params.get("image_base64", "")
+            if not image_base64:
+                print("[Vision] 收到空的 SCREENSHOT_DATA")
+                return False
+
+            # 回调 VisualObserver
+            if hasattr(self.ws_server, 'visual_observer') and self.ws_server.visual_observer:
+                self.ws_server.visual_observer.on_frame_received(image_base64)
+            else:
+                print("[Vision] VisualObserver 未设置，忽略截图")
+            return True
+
+        logger.debug(f"视觉通道收到消息: {params}")
         return False
 
 

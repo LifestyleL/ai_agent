@@ -10,10 +10,6 @@ websocket:
   enable_jsonrpc: true
 
 ai:
-  qwen:
-    model: "qwen-max"
-    temperature: 0.8
-    max_tokens: 2048
   deepseek:
     model: "deepseek-chat"
     temperature: 0.3
@@ -65,7 +61,7 @@ memory:
     enabled: true
     max_cards: 2000              # 最大卡片数量
     create_interval: 1           # 每 N 轮对话创建一张卡片
-    link_threshold: 0.25         # 自动链接最低分数
+    link_threshold: 0.35         # 自动链接最低分数
     bfs_max_depth: 3             # BFS 检索最大深度
     bfs_limit: 10                # BFS 检索返回上限
     recency_halflife_days: 7     # 时间衰减半衰期
@@ -75,6 +71,8 @@ memory:
     keyword_score_weight: 0.5
     recency_score_weight: 0.3
     importance_score_weight: 0.2
+    auto_approve_threshold: 0.6  # 重要性>=此值自动 approved
+    suggestion_mode: false       # true = 全部卡片进入 pending 待审核
 
 agent:
   idle_timeout: 60 # 秒，空闲多久触发独白
@@ -99,7 +97,32 @@ spontaneous:
   # V5.0 多层触发窗口（秒）
   window_continuation: [8, 30]   # 对话延续层窗口 [min, max]
   window_emotional: [30, 120]    # 情绪冲动层窗口
-  window_goal: [60, 300]         # 目标驱动层窗口
+  window_goal: [60, 900]         # 目标驱动层窗口（15分钟内目标有效）
+
+# ASR 语音识别配置
+asr:
+  provider: "dashscope"
+  model: "paraformer-realtime-v2"
+  sample_rate: 16000
+  channels: 1
+  bit_depth: 16
+  vad:
+    enabled: true
+    threshold_db: -40.0
+    min_speech_ms: 300
+    max_silence_ms: 800
+
+# 视觉识别（VLM）配置
+vision:
+  enabled: true
+  model: "qwen3.5-plus"                                # VLM 多模态模型
+  base_url: "https://dashscope.aliyuncs.com/compatible-mode/v1"
+  api_key_env: "DASHSCOPE_API_KEY"                     # 环境变量名
+  max_description_chars: 120                           # 描述最大字符数
+  frame_diff_threshold: 0.08                           # 帧差阈值（8% 像素变化视为有意义）
+  base_interval: 180                                   # 活跃期截图间隔（秒）
+  silence_boost_interval: 60                           # 沉默期截图间隔（秒）
+  cooldown_seconds: 30                                 # VLM 调用后冷却（秒）
 
 # 情绪引擎配置
 emotion:

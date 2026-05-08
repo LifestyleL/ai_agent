@@ -3,6 +3,8 @@
  */
 import { AiAudioManager } from "./AiAudioManager";
 import { AI_IDLE } from "./AiIdleAnimator";
+import { DIALOG_BUBBLE } from "../ui/DialogBubble";
+import { ScreenCapture } from "../vision/ScreenCapture";
 
 export class AiWebSocket {
   private static _instance: AiWebSocket;
@@ -112,6 +114,15 @@ export class AiWebSocket {
       AI_IDLE.markBackendActive();
       const d = JSON.parse(data);
 
+      // vision channel 消息（JSON-RPC 包装或直接）
+      const payload = d.params?.data || d;
+      if (payload.channel === 'vision') {
+        if (payload.type === 'SCREENSHOT_REQUEST') {
+          this._handleScreenshotRequest();
+        }
+        return;
+      }
+
       // 调试：打印收到的消息类型
       const msgType = d.type || (d.jsonrpc ? 'JSONRPC' : 'UNKNOWN');
       if (msgType === 'TTS_AUDIO') {
@@ -123,7 +134,17 @@ export class AiWebSocket {
       }
 
       if (d.type === "TTS_AUDIO") {
-        AiAudioManager.getInstance().playTTS(d.audio_base64, d.visemes);
+        AiAudioManager.getInstance().playTTS(d.audio_base64, d.visemes, d.text || "");
+        return;
+      }
+
+      // 文本消息 → 对话气泡
+      if (d.type === "TEXT_CHUNK") {
+        DIALOG_BUBBLE.appendText(d.text || "", "ai");
+        return;
+      }
+      if (d.type === "TEXT_THINKING") {
+        DIALOG_BUBBLE.appendText(d.text || "", "thinking");
         return;
       }
 
@@ -212,6 +233,44 @@ export class AiWebSocket {
   public close(): void {
     this._ws?.close();
     this._connected = false;
+  }
+
+  // ===== 发送方法（channel + params 格式，与后端 message_router 对齐） =====
+
+  private _send(channel: string, params: Record<string, any>): void {
+    if (this._ws?.readyState === WebSocket.OPEN) {
+      this._ws.send(JSON.stringify({ channel, ...params }));
+    } else {
+      console.warn("[AI_WS] WebSocket 未连接，无法发送");
+    }
+  }
+
+  /** 发送文本消息 */
+  sendText(text: string): void {
+    this._send("control", { text });
+  }
+
+  /** 发送音频帧 (base64 PCM16) */
+  sendAudioFrame(base64: string): void {
+    this._send("audio", { type: "ASR_AUDIO", audio_base64: base64 });
+  }
+
+  /** 发送 ASR 控制 (start / stop) */
+  sendAsrControl(action: "start" | "stop"): void {
+    this._send("audio", { type: "ASR_CONTROL", action });
+  }
+
+  /** 发送打断指令 */
+  sendInterrupt(): void {
+    this._send("control", { type: "INTERRUPT" });
+  }
+
+  /** 处理截图请求，截屏后发送 SCREENSHOT_DATA */
+  private async _handleScreenshotRequest(): Promise<void> {
+    const base64 = await ScreenCapture.capture();
+    if (base64) {
+      this._send("vision", { type: "SCREENSHOT_DATA", image_base64: base64 });
+    }
   }
 }
 

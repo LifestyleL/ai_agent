@@ -5,7 +5,7 @@
 import random
 from typing import Dict, Any, Optional
 from datetime import datetime
-from core.llm.llm_api import LLMAPI
+from core.llm.llm_factory import LLMFactory
 import config
 
 
@@ -14,11 +14,7 @@ class ContentGenerator:
 
     def __init__(self, llm=None):
         if llm is None:
-            self.llm = LLMAPI(
-                api_key=config.DEEPSEEK_API_KEY,
-                base_url=config.DEEPSEEK_BASE_URL,
-                model=config.DEEPSEEK_MODEL
-            )
+            self.llm = LLMFactory.get_default()
         else:
             self.llm = llm
         self.last_topics = []  # 最近使用的话题，避免重复
@@ -184,8 +180,8 @@ class ContentGenerator:
 
         recent_hint = ""
         if short_term:
-            last_msgs = [m.get("content", "") for m in short_term[-4:]]
-            recent_hint = "\n".join(last_msgs[-2:]) if last_msgs else ""
+            last_msgs = [m.get("content", "") for m in short_term[-6:]]
+            recent_hint = "\n".join(last_msgs[-3:]) if last_msgs else ""
 
         prompt = f"""你是yume，一个有点傲娇、带点毒舌的AI。现在是{time_of_day}。
 你有一个想聊的方向：{goal}
@@ -196,9 +192,11 @@ class ContentGenerator:
 要求：
 1. 自然，不要直接说"我们来聊XX"，要像一个朋友随口提起
 2. 简短（10-25字）
-3. 符合yume的傲娇毒舌人设
-4. 如果最近对话已经涉及了这个方向，就延续下去
-5. 不要用括号或解释
+3. 符合yume的傲娇毒舌人设，但不要每句都用"哼"开头
+4. 如果最近对话已经涉及了这个方向，就延续下去，不要重复已说过的话
+5. **如果你刚才已经说过类似的话，换个角度说，或者干脆说点别的**
+6. 回应对方实际说的话，不要自顾自说
+7. 不要用括号或解释
 
 直接输出要说的话，不要解释。"""
 
@@ -230,17 +228,81 @@ class ContentGenerator:
             if recent_topics:
                 prompt += f"最近聊到: {', '.join(recent_topics)}"
 
+        # 注入记忆卡片，让 LLM 基于真实记忆生成
+        # topic 是卡片元数据（可能含"yume的"等第三人称），归一化后再给 LLM
+        memory_cards = context.get("memory_cards", [])
+        if memory_cards:
+            memory_lines = "\n".join(
+                f"- {c['topic'].replace('yume的', '我的').replace('yume', '我')}: {c['content'][:80]}"
+                for c in memory_cards[:3]
+            )
+            prompt += f"\n\n我记忆中相关的事情：\n{memory_lines}"
+
         prompt += """
 
 请生成一句简短、自然的话来主动开启对话。要求：
 1. 符合yume的人设（傲娇、毒舌但不过分）
 2. 简短（10-20字）
 3. 自然，不要像机器人
-4. 可以基于时间、近期对话或随机话题
+4. 如果上面有我记忆中相关的事情，优先基于记忆来自然地提起话题
 
 直接输出要说的话，不要解释。"""
 
         return prompt
+
+    async def generate_with_context(self, follow_up_type: str, recent_context: dict) -> Optional[str]:
+        """追问/唤醒内容生成，失败回退模板"""
+        if follow_up_type == "follow_up_gentle":
+            prompt = self._build_follow_up_prompt(recent_context)
+            if self.llm:
+                try:
+                    return await self.llm.ask_async(prompt)
+                except Exception:
+                    pass
+            return self._template_follow_up(recent_context)
+        elif follow_up_type == "wake_up_light":
+            if self.goal_tracker:
+                goal_text = self.goal_tracker.get_best_goal()
+                if goal_text:
+                    return await self.generate_from_goal(goal_text, recent_context)
+            return self._pick_one_time_based_template()
+        return None
+
+    def _build_follow_up_prompt(self, ctx: dict) -> str:
+        turns = ctx.get("recent_turns", [])
+        card = ctx.get("top_card")
+        turns_text = "\n".join(
+            f"{t.get('role', '')}: {t.get('content', '')}" for t in turns[-3:]
+        ) if turns else ""
+        card_text = f"重要记忆：{card['topic']}: {card['content'][:100]}" if card else ""
+        return (
+            f"你之前主动说了一句话，但对方未回复。请用非常轻柔、无压力的方式追问一次，或表达理解。\n"
+            f"最近对话：\n{turns_text}\n{card_text}\n"
+            f"请生成一句自然温暖的追问，不超过30字。"
+        )
+
+    def _template_follow_up(self, ctx: dict) -> str:
+        import random
+        options = [
+            "还在忙吗？没关系的，我就在这儿陪你～",
+            "要是忙的话不用回，我等你。",
+            "刚才说的不急，你先忙你的～",
+        ]
+        if ctx.get("recent_turns"):
+            last = ctx["recent_turns"][-1]
+            if last.get("role") == "assistant" and len(last.get("content", "")) > 10:
+                topic = last["content"][:20]
+                options.insert(0, f"关于「{topic}...」，不急的，晚点再聊～")
+        return random.choice(options)
+
+    def _pick_one_time_based_template(self) -> str:
+        """从时间模板列表中随机选一个，返回单个字符串"""
+        time_ctx = {"time_of_day": "", "weekday": ""}
+        templates = self._get_time_based_templates(time_ctx)
+        if isinstance(templates, list) and templates:
+            import random
+            return random.choice(templates)
+        return "记得起来活动一下哦～"
 
     async def generate(self, context: Dict[str, Any], use_llm: bool = False) -> Dict[str, Any]:
         """
@@ -249,7 +311,7 @@ class ContentGenerator:
         Returns:
             {
                 "text": str,  # 发言文本
-                "source": str,  # "template", "context", "llm"
+                "source": str,  # "memory", "goal", "template", "context", "llm"
                 "emotion": str,  # 建议的情感
                 "action": str,  # 建议的动作
                 "priority": int,  # 上下文中的优先级
@@ -258,6 +320,32 @@ class ContentGenerator:
         time_context = context.get("time_context", {})
         trigger_info = context.get("trigger_info", {})
         priority = trigger_info.get("priority", 1)
+
+        # 方法0：优先使用记忆卡片（让自发说话有根有据）
+        memory_cards = context.get("memory_cards", [])
+        if memory_cards:
+            card = random.choice(memory_cards)
+            topic = card.get("topic", "")
+            if topic and len(topic) > 1:
+                # 归一化：卡片topic是元数据，可能含第三人称"yume"，
+                # 但yume说话永远用第一人称"我"
+                speak_topic = topic.replace("yume的", "我的").replace("yume整理", "我整理").replace("yume", "我")
+                time_of_day = time_context.get("time_of_day", "")
+                prompts = [
+                    f"说起{speak_topic}…我好像还记得一些呢。",
+                    f"唔，之前{speak_topic}的事情，突然想起来了。",
+                    f"诶，你还记得{speak_topic}那次吗？",
+                    f"我刚刚突然想到{speak_topic}的事情了。",
+                ]
+                text = random.choice(prompts)
+                print(f"[ContentGenerator] 基于记忆生成: topic='{topic}' -> speak='{text}'")
+                return {
+                    "text": text,
+                    "source": "memory",
+                    "emotion": card.get("emotion", "neutral"),
+                    "action": "",
+                    "priority": priority
+                }
 
         # 方法1：使用LLM生成（如果启用且优先级高）
         if use_llm and priority >= 4:

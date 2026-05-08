@@ -8,10 +8,11 @@ from .message_router import create_router
 from .json_rpc_builder import JsonRpcBuilder
 from .error_code import ErrorCode
 from config import WS_PORT
-from core.state_machine.state_machine import get_state_machine, State, Event
+from core.state_machine.state_machine import StateMachine, State, Event
 from core.state_machine.transitions import setup_base_transitions
 from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
-from backend.plugins.registry import get_global_registry
+from backend.plugins.registry import ToolRegistry
+from services.asr.speech_recognizer import SpeechRecognizer
 class WSServer:
     _instance = None 
     
@@ -29,6 +30,7 @@ class WSServer:
         self.websocket = None
         self.driver = None
         self.tts = None
+        self.speech_recognizer = SpeechRecognizer()
         self._initialized = True
 
         # [FIX] TTS 后台初始化（只启动一次）
@@ -47,10 +49,10 @@ class WSServer:
     def _setup_driver_state_machine(self, driver):
         """配置driver的状态机（使用真实Action引擎，与main.py保持一致）"""
         print("[WSServer] 配置driver状态机（真实引擎）...")
-        sm = get_state_machine()
+        sm = getattr(self, 'state_machine', None) or StateMachine()
         setup_base_transitions(sm)
         # 获取全局工具注册中心
-        reg = get_global_registry()
+        reg = getattr(self, 'tool_registry', None) or ToolRegistry()
         # 绑定真实 Action 引擎
         real_think = create_real_think_action(state_machine=sm, registry=reg, driver_instance=driver)
         real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg)
@@ -62,6 +64,32 @@ class WSServer:
     async def _handle_client(self, websocket):
         self.websocket = websocket
         print("[PHONE] 前端已连接")
+
+        # 设置 ASR 结果回调
+        ws_ref = self  # 闭包引用
+
+        def on_asr_result(text: str, is_final: bool):
+            if not is_final:
+                # 中间结果：推送到前端实时字幕
+                asyncio.ensure_future(websocket.send(json.dumps({
+                    "jsonrpc": "2.0",
+                    "method": "message",
+                    "params": {
+                        "channel": "audio",
+                        "type": "ASR_PARTIAL",
+                        "text": text,
+                    },
+                    "id": None,
+                })))
+            else:
+                # 最终结果：打断 TTS → 走正常输入处理
+                if ws_ref.driver:
+                    ws_ref.driver.interrupt_tts()
+                    ws_ref.driver.handle_user_input(text, source="voice")
+                else:
+                    print("[ASR] driver 未初始化，无法处理语音输入")
+
+        self.speech_recognizer.set_result_callback(on_asr_result)
 
         asyncio.create_task(self._queue_consumer())
 
@@ -120,6 +148,10 @@ class WSServer:
         if isinstance(data, dict) and data.get("type") == "TTS_AUDIO":
             return "audio"
 
+        # 检查是否为 ASR 相关数据
+        if isinstance(data, dict) and data.get("type") in ("ASR_PARTIAL", "TTS_STOP"):
+            return "audio"
+
         # 检查是否为 Live2D 参数数据
         # Live2D 参数通常包含 Param 开头的键
         if isinstance(data, dict):
@@ -170,9 +202,18 @@ class WSServer:
                         await self.websocket.send(json.dumps(error_response))
                     except Exception as inner_e:
                         print(f"[发送失败] [WS] 发送错误响应也失败: {inner_e}")
+    async def send_screenshot_request(self):
+        """请求前端截屏（vision channel）"""
+        if self.websocket:
+            try:
+                await self.websocket.send(json.dumps({
+                    "channel": "vision",
+                    "type": "SCREENSHOT_REQUEST",
+                }))
+            except Exception as e:
+                print(f"[Vision] 发送截图请求失败: {e}")
+
     #端口监听，使用端口8765
     async def start_server(self, host="0.0.0.0", port=WS_PORT):
         print(f"[启动] 启动 WebSocket 服务 ws://{host}:{port}")
         return await websockets.serve(self._handle_client, host, port)
-
-ws_instance = WSServer()

@@ -1,19 +1,23 @@
 import httpx
 import json
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
+
+# content 字段可以是纯文本字符串，也可以是多模态数组（OpenAI 格式）
+MessageContent = Union[str, List[Dict[str, Any]]]
 
 class LLMAPI:
-    """LLM API 调用封装类，兼容 OpenAI 格式。同时支持同步和异步调用。"""
+    """LLM API 调用封装类，兼容 OpenAI 格式（含多模态）。同时支持同步和异步调用。"""
 
-    def __init__(self, api_key: str, base_url: str, model: str = "gpt-3.5-turbo"):
+    def __init__(self, api_key: str, base_url: str, model: str = "gpt-3.5-turbo", timeout: int = 30):
         self.api_key = api_key
         self.base_url = base_url.rstrip("/")
         self.model = model
+        self.timeout = timeout
 
     # ─── 同步方法（httpx.Client，向后兼容） ───
 
     def chat(self,
-             messages: List[Dict[str, str]],
+             messages: List[Dict[str, Any]],
              temperature: float = 0.7,
              functions: Optional[List[Dict]] = None
              ) -> Dict[str, Any]:
@@ -30,7 +34,7 @@ class LLMAPI:
             payload["functions"] = functions
 
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=self.timeout) as client:
                 response = client.post(
                     f"{self.base_url}/chat/completions",
                     headers=headers,
@@ -39,13 +43,13 @@ class LLMAPI:
                 response.raise_for_status()
                 return response.json()
         except httpx.TimeoutException:
-            print("❌ API 请求超时")
+            print("[ERROR] API 请求超时")
             return {"error": "请求超时"}
         except httpx.HTTPStatusError as e:
-            print(f"❌ HTTP 错误: {e}")
+            print(f"[ERROR] HTTP 错误: {e}")
             return {"error": f"HTTP错误: {e}"}
         except Exception as e:
-            print(f"❌ API调用失败: {e}")
+            print(f"[ERROR] API调用失败: {e}")
             return {"error": str(e)}
 
     def ask(self, prompt: str, temperature: float = 0.7) -> str:
@@ -72,7 +76,7 @@ class LLMAPI:
             return "解析回复失败"
 
     def chat_stream(self,
-                    messages: List[Dict[str, str]],
+                    messages: List[Dict[str, Any]],
                     temperature: float = 0.7,
                     functions: Optional[List[Dict]] = None
                     ):
@@ -90,7 +94,7 @@ class LLMAPI:
             payload["functions"] = functions
 
         try:
-            with httpx.Client(timeout=30) as client:
+            with httpx.Client(timeout=self.timeout) as client:
                 with client.stream(
                     "POST",
                     f"{self.base_url}/chat/completions",
@@ -129,7 +133,7 @@ class LLMAPI:
     # ─── 异步方法（httpx.AsyncClient） ───
 
     async def chat_async(self,
-                         messages: List[Dict[str, str]],
+                         messages: List[Dict[str, Any]],
                          temperature: float = 0.7,
                          functions: Optional[List[Dict]] = None
                          ) -> Dict[str, Any]:
@@ -155,13 +159,13 @@ class LLMAPI:
                 response.raise_for_status()
                 return response.json()
         except httpx.TimeoutException:
-            print("❌ API 请求超时")
+            print("[ERROR] API 请求超时")
             return {"error": "请求超时"}
         except httpx.HTTPStatusError as e:
-            print(f"❌ HTTP 错误: {e}")
+            print(f"[ERROR] HTTP 错误: {e}")
             return {"error": f"HTTP错误: {e}"}
         except Exception as e:
-            print(f"❌ API调用失败: {e}")
+            print(f"[ERROR] API调用失败: {e}")
             return {"error": str(e)}
 
     async def ask_async(self, prompt: str, temperature: float = 0.7) -> str:
@@ -188,7 +192,7 @@ class LLMAPI:
             return "解析回复失败"
 
     async def chat_stream_async(self,
-                                 messages: List[Dict[str, str]],
+                                 messages: List[Dict[str, Any]],
                                  temperature: float = 0.7,
                                  functions: Optional[List[Dict]] = None
                                  ):

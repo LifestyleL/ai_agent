@@ -4,10 +4,11 @@
 
 import asyncio
 import time
-import random
 import threading
-from typing import Optional, Dict, Any, Callable
+import json
+from typing import Optional, Dict, Any, Callable, List
 from datetime import datetime
+from pathlib import Path
 
 from .context_reader import ContextReader
 from .trigger_policy import TriggerPolicy
@@ -15,18 +16,44 @@ from .content_generator import ContentGenerator
 from .freq_limiter import FreqLimiter
 from .response_tracker import ResponseTracker, ResponseType
 from .interrupt_handler import InterruptHandler, InterruptType
+from .engagement_profile import EngagementProfile, EngagementParameters, load_profiles_dict, PRESET_PROFILES_PATH
+from .engagement_analyzer import UserEngagementAnalyzer
+from .silence_gate import SilenceGate, InternalEvent, Decision, detect_short_reply
 
-from ..memory.memory_core import MemoryCore
+from ..memory.memory_facade import MemoryFacade as MemoryCore
 from ..event.event_bus import event_bus, EventType, Event, event_handler
 import config
+
+
+def _longest_common_substring(a: str, b: str) -> str:
+    """两个字符串的最长公共子串（纯函数）"""
+    if not a or not b:
+        return ""
+    m, n = len(a), len(b)
+    max_len, end_pos = 0, 0
+    prev = [0] * (n + 1)
+    for i in range(1, m + 1):
+        curr = [0] * (n + 1)
+        for j in range(1, n + 1):
+            if a[i - 1] == b[j - 1]:
+                curr[j] = prev[j - 1] + 1
+                if curr[j] > max_len:
+                    max_len = curr[j]
+                    end_pos = i
+            else:
+                curr[j] = 0
+        prev = curr
+    return a[end_pos - max_len:end_pos]
+
 
 class SpontaneousEngine:
     """自驱动引擎主类"""
 
-    def __init__(self, memory_core: MemoryCore, llm=None, goal_tracker=None):
+    def __init__(self, memory_core: MemoryCore, llm=None, goal_tracker=None, visual_observer=None):
         self.memory_core = memory_core
         self.llm = llm
         self.goal_tracker = goal_tracker  # GoalTracker 实例（可选）
+        self._visual_observer = visual_observer  # VisualObserver 实例（可选）
 
         # 初始化组件（注入情绪引擎引用）
         emotion_engine = memory_core._emotion_engine if hasattr(memory_core, '_emotion_engine') else None
@@ -43,11 +70,24 @@ class SpontaneousEngine:
         self.last_check_time = 0
         self.loop_task: Optional[asyncio.Task] = None
 
-        # 连续发言状态
-        self._consecutive_count = 0
-        self._consecutive_active = False
-        self._consecutive_max = config.SPONTANEOUS_CONSECUTIVE_MAX
-        self._consecutive_stop_prob = config.SPONTANEOUS_CONSECUTIVE_STOP_PROB
+        # SilenceGate 语境门控
+        self._silence_gate = None  # 在 __init__ 末尾初始化
+
+        # 内部事件队列
+        self._internal_events: list = []
+
+        # ── 用户画像 ──
+        self._load_user_profile()
+        if self.user_profile.mode == "auto":
+            self.engagement_analyzer = UserEngagementAnalyzer(
+                window_days=7, max_rounds=50
+            )
+        else:
+            self.engagement_analyzer = None
+        self._inference_history: list = []
+
+        # ── 会话状态 ──
+        self._last_daily_greet_date: Optional[str] = None
 
         # 回调函数
         self.speech_callback: Optional[Callable[[str, Dict[str, Any]], None]] = None
@@ -55,10 +95,20 @@ class SpontaneousEngine:
         # 心跳日志计数器
         self._loop_ticks = 0
 
+        # 最近自发发言记录，用于硬去重
+        self._recently_spoken: list = []  # 最多保留 10 条
+
         # 注册事件处理器
         self._setup_event_handlers()
 
-        print(f"[SpontaneousEngine] 引擎初始化完成，检查间隔: {self.check_interval}秒")
+        # 初始化 SilenceGate
+        self._silence_gate = SilenceGate(
+            llm=self.llm,
+            short_term_provider=lambda: self.memory_core.short_term_history[-12:] if self.memory_core.short_term_history else []
+        )
+
+        print(f"[SpontaneousEngine] 引擎初始化完成，检查间隔: {self.check_interval}秒, "
+              f"用户类型: {self.user_profile.profile_type}")
 
     def _setup_event_handlers(self):
         """设置事件处理器"""
@@ -79,65 +129,23 @@ class SpontaneousEngine:
         self.speech_callback = callback
         print("[SpontaneousEngine] 发言回调已设置")
 
-    def _calc_backoff_delay(self) -> float:
-        """
-        指数回退延迟：连续发言时，每次延迟指数增长+随机抖动
-
-        第0次: random(0, 1)
-        第1次: random(1, 10)
-        第2次: random(10, 60)
-        第3次: random(60, 180)
-        第4次+: random(60, 180)  # 封顶
-        """
-        tiers = [
-            (0, 1),     # 第0次：试探性，很快
-            (1, 10),    # 第1次：稍微等一下
-            (10, 60),   # 第2次：想想再说
-            (60, 180),  # 第3次+：封顶
-        ]
-        idx = min(self._consecutive_count, len(tiers) - 1)
-        low, high = tiers[idx]
-        return random.uniform(low, high)
-
-    def _should_continue(self) -> bool:
-        """
-        判断是否继续连续发言，概率递减
-        第0次后: 100% 继续（刚触发，至少说一句）
-        第1次后: 70% 继续
-        第2次后: 49% 继续
-        第3次后: 34% 继续
-        或者达到最大次数 → 停止
-        """
-        if self._consecutive_count >= self._consecutive_max:
-            return False
-        if self._consecutive_count == 0:
-            return True  # 触发后至少说一句
-
-        stop_prob = self._consecutive_stop_prob * self._consecutive_count
-        return random.random() > stop_prob
-
-    def _end_consecutive(self):
-        """结束连续发言，重置状态"""
-        self._consecutive_active = False
-        self._consecutive_count = 0
-        self.trigger_policy.update_user_activity()  # 重置沉默计时（模拟用户活动）
-        print("[SpontaneousEngine] [连续发言] 状态重置")
-
     def on_user_activity(self, user_input: str = ""):
         """用户活动回调（ASR或文本输入）"""
-        # 如果处于连续发言模式，立即打断
-        if self._consecutive_active:
-            print("[SpontaneousEngine] [连续发言] 用户打断，立即停止")
-            self._end_consecutive()
-
         self.trigger_policy.update_user_activity()
+        self.freq_limiter.reset_reject_multiplier()
+
+        # SilenceGate 检测关键词 + 更新状态
+        if self._silence_gate:
+            self._silence_gate.on_user_activity(user_input)
+
+        # 检测话题枯竭信号
+        if user_input and detect_short_reply(user_input):
+            self._push_internal_event("topic_exhausted", 0.3, "用户连续短回复，话题可能枯竭")
 
         # 如果有待追踪的主动发言，记录用户响应
         if user_input and self.response_tracker.last_spontaneous_time > 0:
             time_to_respond = time.time() - self.response_tracker.last_spontaneous_time
             response_type = self.response_tracker.record_response(user_input, time_to_respond)
-
-            # 基于响应类型调整策略
             self._adjust_based_on_response(response_type)
 
         print(f"[SpontaneousEngine] 用户活动: '{user_input[:30]}...'")
@@ -181,50 +189,124 @@ class SpontaneousEngine:
             self.freq_limiter.record_reject("用户无视")
         # 中性响应不需要特殊调整
 
+    # ─── 用户画像 ───
+
+    def _load_user_profile(self):
+        """加载用户画像配置"""
+        base_dir = Path(__file__).parent.parent.parent
+        default_spon = {
+            "check_interval": config.SPONTANEOUS_CHECK_INTERVAL,
+            "max_per_hour": config.SPONTANEOUS_MAX_PER_HOUR,
+            "max_per_day": config.SPONTANEOUS_MAX_PER_DAY,
+            "min_interval": config.SPONTANEOUS_MIN_INTERVAL,
+            "night_start": config.SPONTANEOUS_NIGHT_START,
+            "night_end": config.SPONTANEOUS_NIGHT_END,
+        }
+        profiles = load_profiles_dict(PRESET_PROFILES_PATH)
+        user_config = self._read_user_engagement_config()
+        self.user_profile = EngagementProfile.create_from_config(user_config, default_spon, profiles)
+        self._apply_profile_to_components()
+
+    def _read_user_engagement_config(self) -> dict:
+        config_path = Path(__file__).parent.parent.parent / "agent_memory" / "spontaneous" / "engagement.json"
+        try:
+            if config_path.exists():
+                return json.loads(config_path.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+        return {"mode": "auto", "profile_type": "normal"}
+
+    def _apply_profile_to_components(self):
+        p = self.user_profile.parameters
+        self.check_interval = p.check_interval
+        self.freq_limiter.apply_parameters(p)
+
+    # ─── 追问与冷场恢复 ───
+
+    async def _try_daily_greeting(self):
+        today = time.strftime("%Y-%m-%d")
+        if self._last_daily_greet_date == today:
+            return
+        hour = time.localtime().tm_hour
+        if hour in (8, 20):
+            greeting = "早安～" if hour == 8 else "晚安，早点休息～"
+            try:
+                ctx = {"source": "daily_greeting", "priority": 1, "emotion": "neutral",
+                       "action": "", "time": datetime.now().strftime("%H:%M:%S")}
+                if self.speech_callback:
+                    self.speech_callback(greeting, ctx)
+                    self._last_daily_greet_date = today
+            except Exception:
+                pass
+
+    # ─── 自动推断 ───
+
+    async def _auto_update_profile(self):
+        if self.user_profile.mode != "auto" or not self.engagement_analyzer:
+            return
+        now = time.time()
+        if now - self.engagement_analyzer.last_inference_time < 21600:
+            return
+        inferred = self.engagement_analyzer.infer_type()
+        self._inference_history.append(inferred)
+        if len(self._inference_history) > 3:
+            self._inference_history.pop(0)
+        if len(set(self._inference_history)) == 1 and len(self._inference_history) >= 3:
+            if inferred != self.user_profile.profile_type:
+                base_dir = Path(__file__).parent.parent.parent
+                default_spon = {
+                    "check_interval": config.SPONTANEOUS_CHECK_INTERVAL,
+                    "max_per_hour": config.SPONTANEOUS_MAX_PER_HOUR,
+                    "max_per_day": config.SPONTANEOUS_MAX_PER_DAY,
+                    "min_interval": config.SPONTANEOUS_MIN_INTERVAL,
+                    "night_start": config.SPONTANEOUS_NIGHT_START,
+                    "night_end": config.SPONTANEOUS_NIGHT_END,
+                }
+                profiles = load_profiles_dict(PRESET_PROFILES_PATH)
+                self.user_profile.apply_preset(inferred, default_spon, profiles)
+                self._apply_profile_to_components()
+                print(f"[SpontaneousEngine] 自动切换用户类型: → {inferred}")
+        self.engagement_analyzer.last_inference_time = now
+
+    # ─── 主循环 ───
+
     async def _main_loop(self):
-        """主循环"""
+        """主循环：事件驱动 + 语境门控"""
         print(f"[SpontaneousEngine] 主循环启动，间隔: {self.check_interval}秒")
 
         while self.is_running:
             try:
-                # === 情况A：连续发言模式 ===
-                if self._consecutive_active:
-                    delay = self._calc_backoff_delay()
-                    print(f"[SpontaneousEngine] [连续发言] 第{self._consecutive_count}次，等待 {delay:.1f}s 后决定是否继续")
-                    await asyncio.sleep(delay)
+                # 视觉观察 tick（独立于触发逻辑，混合节奏）
+                if self._visual_observer:
+                    silence = time.time() - max(
+                        self.trigger_policy.last_user_activity,
+                        self.trigger_policy.last_spoke_time
+                    )
+                    await self._visual_observer.tick(silence)
 
-                    if self._should_continue():
-                        # 生成下一句
-                        success = await self._generate_and_speak_consecutive()
-                        if success:
-                            self._consecutive_count += 1
-                        else:
-                            self._end_consecutive()
-                    else:
-                        print(f"[SpontaneousEngine] [连续发言] 自然结束，共发言 {self._consecutive_count} 次")
-                        self._end_consecutive()
-                    continue
+                if self.user_profile.parameters.allow_spontaneous:
+                    await self._check_and_trigger()
 
-                # === 情况B：正常沉默检测 ===
-                await self._check_and_trigger()
-                # 情绪基线回归：每次循环温和地向 neutral 靠近
+                # 每日问候（独立于触发逻辑）
+                await self._try_daily_greeting()
+
+                # 情绪基线回归
                 if self.trigger_policy._emotion_engine:
                     self.trigger_policy._emotion_engine.drift()
+
+                # 自动推断更新
+                await self._auto_update_profile()
                 await asyncio.sleep(self.check_interval)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 print(f"[SpontaneousEngine] 主循环错误: {e}")
-                await asyncio.sleep(5)  # 错误后等待5秒
+                await asyncio.sleep(5)
 
         print("[SpontaneousEngine] 主循环结束")
 
     async def _check_and_trigger(self):
-        """检查并触发主动发言"""
-        # 如果处于连续发言模式，跳过正常检测
-        if self._consecutive_active:
-            return
-
+        """事件驱动触发检测：内部事件 → 触发信号 → 语境门控 → 频率限制 → 内容生成"""
         now = time.time()
 
         # 控制检查频率
@@ -234,19 +316,19 @@ class SpontaneousEngine:
         self.last_check_time = now
         self._loop_ticks += 1
 
-        # 每10次检查打印心跳
+        # 心跳日志
         if self._loop_ticks % 10 == 0:
             silence = time.time() - max(
                 self.trigger_policy.last_user_activity,
                 self.trigger_policy.last_spoke_time
             )
-            print(f"[SpontaneousEngine] 心跳 #{self._loop_ticks}: 沉默 {silence:.0f}s, "
-                  f"触发阈值 {self.trigger_policy.window_silence}s")
+            print(f"[SpontaneousEngine] 心跳 #{self._loop_ticks}: 沉默 {silence:.0f}s")
 
-        # 1. 读取上下文
+        # 1. 收集内部事件
+        events = self._collect_internal_events()
+
+        # 2. 触发策略：汇总信号（确定性，不掷骰子）
         context = self.context_reader.build_context_summary()
-
-        # 2. 检查触发策略（V5.0 情绪感知多层触发）
         has_goal = bool(self.goal_tracker and self.goal_tracker.get_best_goal())
         short_term_count = context.get("short_term_count", 0)
         trigger_result = self.trigger_policy.evaluate(
@@ -255,20 +337,52 @@ class SpontaneousEngine:
             short_term_count=short_term_count,
         )
 
-        if not trigger_result["should_trigger"]:
-            return
+        # 3. 语境门控：即使有触发信号，也需要语境允许
+        if self._silence_gate:
+            silence_duration = trigger_result.get("silence_duration", 0)
+            emotion_type = trigger_result.get("details", {}).get("emotion_type", 0)
+            hour = time.localtime().tm_hour
 
-        # 3. 检查频率限制
-        freq_check = self.freq_limiter.check(trigger_result["priority"])
+            gate_result = self._silence_gate.check(
+                events=events,
+                silence_duration=silence_duration,
+                short_term_count=short_term_count,
+                emotion_type=emotion_type,
+                hour=hour,
+            )
 
-        if not freq_check["allowed"]:
-            print(f"[SpontaneousEngine] 频率限制阻止发言: {', '.join(freq_check['reasons'])}")
-            return
+            if gate_result.decision != Decision.SPEAK:
+                if gate_result.decision == Decision.WAIT and gate_result.wait_seconds > 0:
+                    # 延长检查间隔
+                    self.last_check_time = now + gate_result.wait_seconds - self.check_interval
+                elif gate_result.decision in (Decision.SILENCE, Decision.SILENCE_LONG):
+                    # 静默时退避：避免无意义的短间隔重检
+                    backoff = 120 if gate_result.decision == Decision.SILENCE else 300
+                    self.last_check_time = now + backoff - self.check_interval
+                print(f"[SpontaneousEngine] 语境门控阻止: {gate_result.decision.value} - {gate_result.reason}")
+                return
 
-        # 4. 生成内容（优先使用 GoalTracker 目标驱动）
+        # 5. 主动搜索记忆，给内容生成提供真实话题材料
+        memory_cards = []
+        if self.context_reader:
+            try:
+                topics = context.get("recent_topics", [])
+                keywords = [t[:15] for t in topics[:3]] if topics else []
+                memory_cards = self.context_reader.search_relevant_memories(keywords, limit=5)
+                if memory_cards:
+                    print(f"[SpontaneousEngine] 记忆检索到 {len(memory_cards)} 张相关卡片")
+            except Exception as e:
+                print(f"[SpontaneousEngine] 记忆检索异常: {e}")
+        context["memory_cards"] = memory_cards
+
+        # 视觉观察上下文注入
+        if self._visual_observer and self._visual_observer.last_description:
+            context["visual_observation"] = self._visual_observer.last_description
+
+        # 6. 生成内容：优先目标驱动（有目标时不必等高层触发）
         content_result = None
 
-        if self.goal_tracker and trigger_result["priority"] >= 3:
+        if self.goal_tracker:
             best_goal = self.goal_tracker.get_best_goal()
             if best_goal:
                 print(f"[SpontaneousEngine] 尝试目标驱动发言: {best_goal[:60]}...")
@@ -283,7 +397,7 @@ class SpontaneousEngine:
                     }
 
         if content_result is None:
-            use_llm = trigger_result["priority"] >= 4  # 高优先级使用LLM
+            use_llm = trigger_result["priority"] >= 4
             content_result = await self.content_generator.generate(
                 {**context, "trigger_info": trigger_result},
                 use_llm=use_llm
@@ -293,7 +407,20 @@ class SpontaneousEngine:
             print("[SpontaneousEngine] 内容生成失败")
             return
 
-        # 5. 准备发言上下文
+        # 7. 去重：与最近发言的公共子串 >= 一半 → 丢弃
+        text = content_result["text"]
+        for prev in self._recently_spoken[-5:]:
+            common = _longest_common_substring(text, prev)
+            if len(common) >= min(len(text), len(prev)) * 0.5:
+                print(f"[SpontaneousEngine] 丢弃重复发言: '{text}' (与 '{prev}' 公共子串 '{common}')")
+                return
+
+        # 记录
+        self._recently_spoken.append(text)
+        if len(self._recently_spoken) > 10:
+            self._recently_spoken.pop(0)
+
+        # 8. 发言
         speech_context = {
             "source": content_result["source"],
             "priority": trigger_result["priority"],
@@ -304,7 +431,6 @@ class SpontaneousEngine:
             "time": datetime.now().strftime("%H:%M:%S")
         }
 
-        # 6. 标记为主动发言并调用回调
         self._last_was_spontaneous = True
         self._last_spontaneous_context = {
             **trigger_result,
@@ -320,80 +446,56 @@ class SpontaneousEngine:
 
         if self.speech_callback:
             self.speech_callback(content_result["text"], speech_context)
-            # 记录自驱动发言频率
             self.freq_limiter.record_spoke()
-            # 触发连续发言模式
-            self._consecutive_active = True
-            self._consecutive_count = 1
-            print(f"[SpontaneousEngine] 进入连续发言模式，当前计数: {self._consecutive_count}")
         else:
             print("[SpontaneousEngine] 警告: 未设置发言回调")
 
-    async def _generate_and_speak_consecutive(self) -> bool:
-        """
-        连续发言模式下生成并说出一句话
-        Returns: 是否成功发言
-        """
-        # 1. 读取上下文
-        context = self.context_reader.build_context_summary()
+    # ─── 内部事件收集 ───
 
-        # 2. 检查频率限制（使用中等优先级3）
-        freq_check = self.freq_limiter.check(priority=3)
-        if not freq_check["allowed"]:
-            print(f"[SpontaneousEngine] [连续发言] 频率限制阻止发言: {', '.join(freq_check['reasons'])}")
-            return False
+    def _push_internal_event(self, event_type: str, strength: float, summary: str = "", data: dict = None):
+        """添加内部事件到队列"""
+        event = InternalEvent(type=event_type, strength=strength, summary=summary, data=data or {})
+        self._internal_events.append(event)
 
-        # 3. 生成内容（根据连续次数调整）
-        use_llm = False  # 连续发言不使用LLM，保持轻量
-        # 构建触发信息模拟
-        trigger_result = {
-            "should_trigger": True,
-            "silence_duration": self.trigger_policy._calculate_silence_duration(),
-            "trigger_reason": f"consecutive_{self._consecutive_count}",
-            "priority": 3,
-            "details": {"consecutive": True}
-        }
+    def _collect_internal_events(self) -> List[InternalEvent]:
+        """收集并清空内部事件队列"""
+        events = self._internal_events[:]
+        self._internal_events.clear()
 
-        content_result = await self.content_generator.generate(
-            {**context, "trigger_info": trigger_result},
-            use_llm=use_llm
+        # 沉默本身就是一个事件：沉默越久，强度越高
+        silence = time.time() - max(
+            self.trigger_policy.last_user_activity,
+            self.trigger_policy.last_spoke_time
         )
+        if silence >= 300:  # 5 分钟以上沉默产生事件
+            silence_strength = min(silence / 3600, 1.0)  # 1 小时封顶
+            events.append(InternalEvent(
+                type="prolonged_silence",
+                strength=silence_strength,
+                summary=f"用户已沉默 {silence/60:.0f} 分钟"
+            ))
 
-        if not content_result["text"]:
-            print("[SpontaneousEngine] [连续发言] 内容生成失败")
-            return False
+        # 检查 GoalTracker 是否有活跃目标
+        if self.goal_tracker:
+            best_goal = self.goal_tracker.get_best_goal()
+            if best_goal:
+                events.append(InternalEvent(
+                    type="goal_updated",
+                    strength=0.5,
+                    summary=best_goal[:60]
+                ))
 
-        # 4. 准备发言上下文
-        speech_context = {
-            "source": content_result["source"] + "_consecutive",
-            "priority": 3,
-            "trigger_reason": f"连续发言第{self._consecutive_count}次",
-            "silence_duration": trigger_result["silence_duration"],
-            "emotion": content_result.get("emotion", "neutral"),
-            "action": content_result.get("action", ""),
-            "time": datetime.now().strftime("%H:%M:%S")
-        }
+        # 检查是否刚创建了重要卡片（从 response_tracker 推断）
+        if self.response_tracker.last_spontaneous_time > 0:
+            recent_stats = self.response_tracker.get_recent_stats(1)
+            if recent_stats.get("positive_ratio", 0) > 0.5:
+                events.append(InternalEvent(
+                    type="positive_interaction",
+                    strength=0.4,
+                    summary="刚才的互动看起来不错"
+                ))
 
-        # 6. 标记为主动发言并调用回调
-        self._last_was_spontaneous = True
-        self._last_spontaneous_context = {
-            **trigger_result,
-            **content_result,
-            "time_context": context.get("time_context", {})
-        }
-
-        print(f"[SpontaneousEngine] [连续发言] 第{self._consecutive_count}次发言:")
-        print(f"  内容: '{content_result['text']}'")
-        print(f"  来源: {content_result['source']}")
-
-        if self.speech_callback:
-            self.speech_callback(content_result["text"], speech_context)
-            # 记录自驱动发言频率
-            self.freq_limiter.record_spoke()
-            return True
-        else:
-            print("[SpontaneousEngine] [连续发言] 警告: 未设置发言回调")
-            return False
+        return events
 
     def start(self):
         """启动引擎"""

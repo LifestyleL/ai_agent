@@ -1,199 +1,242 @@
 """
-应用配置入口
+应用配置 (V2.0 — 单一声源)
 
-保持向后兼容：
-- CONFIG 字典仍然可用
-- 原有的常量（WS_PORT 等）仍然可用
-- 但现在它们都从 YAML 加载
+- YAML 树是唯一数据源 (default.yaml + {env}.yaml + .env)
+- AppConfig 对象提供统一访问
+- 模块级 __getattr__ 保持向后兼容：from config import WS_PORT 仍然有效
+- 新增配置项只需在 default.yaml 和 _KEY_MAP 中各加一行
 """
-
 import os
-from utils.config_loader import init_config, get_config, get
+from utils.config_loader import init_config, get_config
 
-# 初始化配置
+# ── 初始化 YAML ──
 init_config()
+_YAML_CONFIG = get_config()
 
-# 获取完整配置
-CONFIG = get_config()
+# ── 单一映射表：UPPER_CASE 模块名 → YAML 路径 ──
+# 新增配置项只需在这里加一行（YAML 中也要有默认值）
+_KEY_MAP = {
+    # WebSocket
+    "WS_PORT": ("websocket", "port"),
+    "ENABLE_JSONRPC_RESPONSE": ("websocket", "enable_jsonrpc"),
+    "LIVE2D_ENABLED": ("live2d", "enabled"),
 
-# ===== 向后兼容的常量导出 =====
+    # AI (统一 DeepSeek)
+    "DEEPSEEK_API_KEY": ("ai", "deepseek", "api_key"),
+    "DEEPSEEK_BASE_URL": (("ai", "deepseek", "base_url"), "https://api.deepseek.com/v1"),
+    "DEEPSEEK_MODEL": (("ai", "deepseek", "model"), "deepseek-chat"),
+    "DASHSCOPE_API_KEY": ("tts", "api_key"),
 
-# WebSocket 配置
-WS_PORT = get("websocket", "port", default=8765)
-ENABLE_JSONRPC_RESPONSE = get("websocket", "enable_jsonrpc", default=True)
-LIVE2D_ENABLED = get("live2d", "enabled", default=False)
+    # TTS
+    "TTS_VOICE": (("tts", "voice"), "zhixiaoxia"),
+    "TTS_SPEED": (("tts", "speed"), 1.0),
+    "TTS_PITCH": (("tts", "pitch"), 1.0),
+    "TTS_MODEL": (("tts", "model"), "qwen3-tts-vd-realtime-2026-01-15"),
+    "TTS_BASE_URL": (("tts", "base_url"), "wss://dashscope.aliyuncs.com/api-ws/v1/realtime"),
 
-# AI 配置
-QWEN_API_KEY = get("ai", "qwen", "api_key", default="")
-QWEN_BASE_URL = get("ai", "qwen", "base_url", default="https://dashscope.aliyuncs.com/compatible-mode/v1")
-QWEN_MODEL = get("ai", "qwen", "model", default="qwen-max")
-DEEPSEEK_API_KEY = get("ai", "deepseek", "api_key", default="")
-DEEPSEEK_BASE_URL = get("ai", "deepseek", "base_url", default="https://api.deepseek.com/v1")
-DEEPSEEK_MODEL = get("ai", "deepseek", "model", default="deepseek-chat")
-DASHSCOPE_API_KEY = get("tts", "api_key", default="")
+    # Memory
+    "SHORT_TERM_MAX_TOKENS": ("memory", "short_term_max_tokens"),
+    "SHORT_TERM_CAPACITY_BASE": ("memory", "short_term_capacity_base"),
+    "SHORT_TERM_CAPACITY_DYNAMIC": ("memory", "short_term_capacity_dynamic"),
+    "SHORT_TERM_CAPACITY_MAX": ("memory", "short_term_capacity_max"),
+    "ENABLE_VECTOR_MEMORY": ("memory", "enable_vector_memory"),
+    "FORGETTING_STRATEGY": ("memory", "forgetting_strategy"),
+    "FORGETTING_MAX_CAPACITY": ("memory", "forgetting_max_capacity"),
+    "FORGETTING_AGGRESSIVENESS": ("memory", "forgetting_aggressiveness"),
+    "ENABLE_WAL_LOGGING": ("memory", "enable_wal_logging"),
+    "SHORT_TERM_HISTORY_TOKENS": ("memory", "short_term_history_tokens"),
+    "CARD_AUTO_APPROVE_THRESHOLD": (("memory", "card", "auto_approve_threshold"), 0.6),
+    "CARD_SUGGESTION_MODE": (("memory", "card", "suggestion_mode"), False),
 
-# TTS 配置
-TTS_VOICE = get("tts", "voice", default="zhixiaoxia")
-TTS_SPEED = get("tts", "speed", default=1.0)
-TTS_PITCH = get("tts", "pitch", default=1.0)
-TTS_MODEL = get("tts", "model", default="qwen3-tts-vd-realtime-2026-01-15")
-TTS_BASE_URL = get("tts", "base_url", default="wss://dashscope.aliyuncs.com/api-ws/v1/realtime")
+    # Agent
+    "IDLE_TIMEOUT": ("agent", "idle_timeout"),
+    "AGENT_IDLE_TIMEOUT": ("agent", "idle_timeout"),
+    "AGENT_IDLE_INTERVAL_MIN": (("agent", "idle_interval_min"), 60),
+    "AGENT_IDLE_INTERVAL_MAX": (("agent", "idle_interval_max"), 65),
+    "MAX_CONCURRENT_TTS": ("agent", "max_concurrent_tts"),
+    "MAX_STEPS": ("agent", "max_steps"),
 
-# 记忆配置
-SHORT_TERM_MAX_TOKENS = get("memory", "short_term_max_tokens", default=4096)
-SHORT_TERM_CAPACITY_BASE = get("memory", "short_term_capacity_base", default=15)
-SHORT_TERM_CAPACITY_DYNAMIC = get("memory", "short_term_capacity_dynamic", default=True)
-SHORT_TERM_CAPACITY_MAX = get("memory", "short_term_capacity_max", default=30)
-ENABLE_VECTOR_MEMORY = get("memory", "enable_vector_memory", default=False)
-FORGETTING_STRATEGY = get("memory", "forgetting_strategy", default="importance_based")
-FORGETTING_MAX_CAPACITY = get("memory", "forgetting_max_capacity", default=2000)
-FORGETTING_AGGRESSIVENESS = get("memory", "forgetting_aggressiveness", default=0.5)
-ENABLE_WAL_LOGGING = get("memory", "enable_wal_logging", default=True)
-SHORT_TERM_HISTORY_TOKENS = get("memory", "short_term_history_tokens", default=1500)
+    # Spontaneous engine
+    "SPONTANEOUS_ENABLED": ("spontaneous", "enabled"),
+    "SPONTANEOUS_CHECK_INTERVAL": ("spontaneous", "check_interval"),
+    "SPONTANEOUS_MIN_SILENCE": ("spontaneous", "min_silence"),
+    "SPONTANEOUS_MIN_INTERVAL": ("spontaneous", "min_interval"),
+    "SPONTANEOUS_MAX_PER_HOUR": ("spontaneous", "max_per_hour"),
+    "SPONTANEOUS_MAX_PER_DAY": ("spontaneous", "max_per_day"),
+    "SPONTANEOUS_COOL_DOWN_AFTER_REJECT": ("spontaneous", "cool_down_after_reject"),
+    "SPONTANEOUS_CONSECUTIVE_MAX": ("spontaneous", "consecutive_max"),
+    "SPONTANEOUS_CONSECUTIVE_STOP_PROB": ("spontaneous", "consecutive_stop_prob"),
+    "SPONTANEOUS_USE_LLM_THRESHOLD": ("spontaneous", "use_llm_threshold"),
+    "SPONTANEOUS_NIGHT_START": ("spontaneous", "night_start"),
+    "SPONTANEOUS_NIGHT_END": ("spontaneous", "night_end"),
+    "SPONTANEOUS_GOAL_UPDATE_MIN_TURNS": ("spontaneous", "goal_update_min_turns"),
+    "SPONTANEOUS_WINDOW_CONTINUATION": ("spontaneous", "window_continuation"),
+    "SPONTANEOUS_WINDOW_EMOTIONAL": ("spontaneous", "window_emotional"),
+    "SPONTANEOUS_WINDOW_GOAL": ("spontaneous", "window_goal"),
 
-# Agent 配置
-IDLE_TIMEOUT = get("agent", "idle_timeout", default=60)
-AGENT_IDLE_TIMEOUT = IDLE_TIMEOUT
-AGENT_IDLE_INTERVAL_MIN = get("agent", "idle_interval_min", default=60)
-AGENT_IDLE_INTERVAL_MAX = get("agent", "idle_interval_max", default=65)
-MAX_CONCURRENT_TTS = get("agent", "max_concurrent_tts", default=1)
-MAX_STEPS = get("agent", "max_steps", default=8)
+    # Vision (VLM)
+    "VISION_ENABLED": ("vision", "enabled"),
+    "VISION_MODEL": (("vision", "model"), "qwen3.5-plus"),
+    "VISION_BASE_URL": (("vision", "base_url"), "https://dashscope.aliyuncs.com/compatible-mode/v1"),
+    "VISION_API_KEY_ENV": (("vision", "api_key_env"), "DASHSCOPE_API_KEY"),
+    "VISION_MAX_DESCRIPTION_CHARS": (("vision", "max_description_chars"), 120),
+    "VISION_FRAME_DIFF_THRESHOLD": (("vision", "frame_diff_threshold"), 0.08),
+    "VISION_BASE_INTERVAL": (("vision", "base_interval"), 180),
+    "VISION_SILENCE_BOOST_INTERVAL": (("vision", "silence_boost_interval"), 60),
+    "VISION_COOLDOWN_SECONDS": (("vision", "cooldown_seconds"), 30),
 
-# 自驱动引擎配置
-SPONTANEOUS_ENABLED = get("spontaneous", "enabled", default=True)
-SPONTANEOUS_CHECK_INTERVAL = get("spontaneous", "check_interval", default=60)
-SPONTANEOUS_MIN_SILENCE = get("spontaneous", "min_silence", default=600)
-SPONTANEOUS_MIN_INTERVAL = get("spontaneous", "min_interval", default=300)
-SPONTANEOUS_MAX_PER_HOUR = get("spontaneous", "max_per_hour", default=3)
-SPONTANEOUS_MAX_PER_DAY = get("spontaneous", "max_per_day", default=10)
-SPONTANEOUS_COOL_DOWN_AFTER_REJECT = get("spontaneous", "cool_down_after_reject", default=120)
-SPONTANEOUS_CONSECUTIVE_MAX = get("spontaneous", "consecutive_max", default=4)
-SPONTANEOUS_CONSECUTIVE_STOP_PROB = get("spontaneous", "consecutive_stop_prob", default=0.3)
-SPONTANEOUS_USE_LLM_THRESHOLD = get("spontaneous", "use_llm_threshold", default=3)
-SPONTANEOUS_NIGHT_START = get("spontaneous", "night_start", default=2)
-SPONTANEOUS_NIGHT_END = get("spontaneous", "night_end", default=5)
-SPONTANEOUS_GOAL_UPDATE_MIN_TURNS = get("spontaneous", "goal_update_min_turns", default=2)
-# V5.0 多层触发窗口
-_wc = get("spontaneous", "window_continuation", default=[8, 30])
-SPONTANEOUS_WINDOW_CONTINUATION = (int(_wc[0]), int(_wc[1]))
-_we = get("spontaneous", "window_emotional", default=[30, 120])
-SPONTANEOUS_WINDOW_EMOTIONAL = (int(_we[0]), int(_we[1]))
-_wg = get("spontaneous", "window_goal", default=[60, 300])
-SPONTANEOUS_WINDOW_GOAL = (int(_wg[0]), int(_wg[1]))
+    # Emotion engine
+    "EMOTION_SMOOTHING_FACTOR": ("emotion", "smoothing_factor"),
+    "EMOTION_DECAY_FACTOR": ("emotion", "decay_factor"),
+    "EMOTION_SWITCH_THRESHOLD": ("emotion", "switch_threshold"),
 
-# 情绪引擎配置
-EMOTION_SMOOTHING_FACTOR = get("emotion", "smoothing_factor", default=0.7)
-EMOTION_DECAY_FACTOR = get("emotion", "decay_factor", default=0.9)
-EMOTION_SWITCH_THRESHOLD = get("emotion", "switch_threshold", default=2)
+    # Card memory (V5.0)
+    "CARD_ENABLED": ("memory", "card", "enabled"),
+    "CARD_MAX_CARDS": ("memory", "card", "max_cards"),
+    "CARD_CREATE_INTERVAL": ("memory", "card", "create_interval"),
+    "CARD_LINK_THRESHOLD": ("memory", "card", "link_threshold"),
+    "CARD_BFS_MAX_DEPTH": ("memory", "card", "bfs_max_depth"),
+    "CARD_BFS_LIMIT": ("memory", "card", "bfs_limit"),
+    "CARD_RECENCY_HALFLIFE_DAYS": ("memory", "card", "recency_halflife_days"),
+    "CARD_TIER1_AGE_DAYS": ("memory", "card", "tier1_age_days"),
+    "CARD_TIER2_AGE_DAYS": ("memory", "card", "tier2_age_days"),
+    "CARD_COMPRESSION_INTERVAL_HOURS": ("memory", "card", "compression_interval_hours"),
+    "CARD_KEYWORD_SCORE_WEIGHT": ("memory", "card", "keyword_score_weight"),
+    "CARD_RECENCY_SCORE_WEIGHT": ("memory", "card", "recency_score_weight"),
+    "CARD_IMPORTANCE_SCORE_WEIGHT": ("memory", "card", "importance_score_weight"),
 
-# V5.0 卡片记忆配置
-CARD_ENABLED = get("memory", "card", "enabled", default=True)
-CARD_MAX_CARDS = get("memory", "card", "max_cards", default=2000)
-CARD_CREATE_INTERVAL = get("memory", "card", "create_interval", default=1)
-CARD_LINK_THRESHOLD = get("memory", "card", "link_threshold", default=0.25)
-CARD_BFS_MAX_DEPTH = get("memory", "card", "bfs_max_depth", default=3)
-CARD_BFS_LIMIT = get("memory", "card", "bfs_limit", default=10)
-CARD_RECENCY_HALFLIFE_DAYS = get("memory", "card", "recency_halflife_days", default=7)
-CARD_TIER1_AGE_DAYS = get("memory", "card", "tier1_age_days", default=3)
-CARD_TIER2_AGE_DAYS = get("memory", "card", "tier2_age_days", default=30)
-CARD_COMPRESSION_INTERVAL_HOURS = get("memory", "card", "compression_interval_hours", default=6)
-CARD_KEYWORD_SCORE_WEIGHT = get("memory", "card", "keyword_score_weight", default=0.5)
-CARD_RECENCY_SCORE_WEIGHT = get("memory", "card", "recency_score_weight", default=0.3)
-CARD_IMPORTANCE_SCORE_WEIGHT = get("memory", "card", "importance_score_weight", default=0.2)
+    # App
+    "DEBUG": ("app", "debug"),
 
-# 调试模式
-DEBUG = get("app", "debug", default=True)
-
-# 兼容旧配置（逐步迁移）
-API_KEY = DEEPSEEK_API_KEY
-BASE_URL = DEEPSEEK_BASE_URL
-MODEL = DEEPSEEK_MODEL
-
-# 构建向后兼容的CONFIG字典（保持旧结构）
-CONFIG = {
-    "deepseek": {
-        "api_key": DEEPSEEK_API_KEY,
-        "base_url": DEEPSEEK_BASE_URL,
-        "model": DEEPSEEK_MODEL
-    },
-    "qwen": {
-        "api_key": QWEN_API_KEY,
-        "base_url": QWEN_BASE_URL,
-        "model": QWEN_MODEL
-    },
-    "tts": {
-        "api_key": DASHSCOPE_API_KEY,
-        "model": TTS_MODEL,
-        "voice": TTS_VOICE,
-        "base_url": TTS_BASE_URL
-    },
-    "agent": {
-        "idle_timeout": AGENT_IDLE_TIMEOUT,
-        "idle_interval_min": AGENT_IDLE_INTERVAL_MIN,
-        "idle_interval_max": AGENT_IDLE_INTERVAL_MAX
-    },
-    "memory": {
-        "short_term_capacity_base": SHORT_TERM_CAPACITY_BASE,
-        "short_term_capacity_dynamic": SHORT_TERM_CAPACITY_DYNAMIC,
-        "short_term_capacity_max": SHORT_TERM_CAPACITY_MAX,
-        "enable_vector_memory": ENABLE_VECTOR_MEMORY,
-        "forgetting_strategy": FORGETTING_STRATEGY,
-        "forgetting_max_capacity": FORGETTING_MAX_CAPACITY,
-        "forgetting_aggressiveness": FORGETTING_AGGRESSIVENESS,
-        "enable_wal_logging": ENABLE_WAL_LOGGING
-    },
-    "websocket": {
-        "port": WS_PORT,
-        "enable_jsonrpc": ENABLE_JSONRPC_RESPONSE
-    }
+    # Legacy compat (same YAML paths as primary keys, with same defaults)
+    "API_KEY": (("ai", "deepseek", "api_key"),),
+    "BASE_URL": (("ai", "deepseek", "base_url"), "https://api.deepseek.com/v1"),
+    "MODEL": (("ai", "deepseek", "model"), "deepseek-chat"),
 }
 
-# 打印配置加载状态（仅 debug 模式）
-if DEBUG:
+
+class AppConfig:
+    """单一配置数据源。通过 __getattr__ 从 YAML 树取值。"""
+
+    def __init__(self, yaml_config: dict, key_map: dict):
+        self._config = yaml_config
+        self._key_map = key_map
+
+    def __getattr__(self, name: str):
+        if name.startswith('_'):
+            raise AttributeError(name)
+        entry = self._key_map.get(name)
+        if entry is None:
+            raise AttributeError(f"Unknown config key: {name}")
+        # entry 可以是 (keys_tuple,) 或 (keys_tuple, default_value)
+        if isinstance(entry[0], tuple):
+            keys, default = entry[0], entry[1] if len(entry) > 1 else None
+        else:
+            keys, default = entry, None
+        d = self._config
+        for k in keys:
+            if isinstance(d, dict):
+                d = d.get(k)
+            else:
+                return default
+        return d if d is not None else default
+
+    def validate(self) -> bool:
+        """验证必要的配置是否已设置"""
+        missing = []
+
+        if not self.DEEPSEEK_API_KEY:
+            missing.append("DEEPSEEK_API_KEY")
+        if not self.DASHSCOPE_API_KEY:
+            missing.append("DASHSCOPE_API_KEY")
+
+        if missing:
+            raise EnvironmentError(
+                f"以下环境变量未设置: {', '.join(missing)}\n"
+                "请在.env文件中设置这些变量，或设置对应的环境变量。\n"
+                "示例.env文件内容:\n"
+                "DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+                "DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
+                "\n可选配置（可使用默认值）:\n"
+                "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1\n"
+                "DEEPSEEK_MODEL=deepseek-chat\n"
+                "TTS_MODEL=qwen3-tts-vd-realtime-2026-01-15\n"
+                "TTS_VOICE=qwen-tts-vd-live2d_girl-voice-20260413174053978-a5da\n"
+                "TTS_BASE_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
+            )
+
+        for key_name, key_value in [
+            ("DEEPSEEK_API_KEY", self.DEEPSEEK_API_KEY),
+            ("DASHSCOPE_API_KEY", self.DASHSCOPE_API_KEY),
+        ]:
+            if key_value and not key_value.startswith("sk-"):
+                print(f"[WARN] {key_name}格式异常，应以'sk-'开头，当前: {key_value[:8]}...")
+
+        print("[OK] 配置验证通过")
+        return True
+
+
+# ── 单例 ──
+_app_config = AppConfig(_YAML_CONFIG, _KEY_MAP)
+
+
+# ── 模块级 __getattr__：向后兼容 ──
+def __getattr__(name: str):
+    """from config import WS_PORT 和 config.WS_PORT 都会走到这里"""
+    if name == 'validate_config':
+        return validate_config
+    if name == 'CONFIG':
+        return _build_config_dict()
+    if name == 'AppConfig':
+        return AppConfig
+    if name in ('_app_config', '_KEY_MAP', '_YAML_CONFIG'):
+        return globals()[f'_{name}'] if name.startswith('_') else globals().get(name)
+    return getattr(_app_config, name)
+
+
+def _build_config_dict() -> dict:
+    """向后兼容的 CONFIG 字典（自动生成，不再手动维护）"""
+    return {
+        "deepseek": {
+            "api_key": _app_config.DEEPSEEK_API_KEY,
+            "base_url": _app_config.DEEPSEEK_BASE_URL,
+            "model": _app_config.DEEPSEEK_MODEL,
+        },
+        "tts": {
+            "api_key": _app_config.DASHSCOPE_API_KEY,
+            "model": _app_config.TTS_MODEL,
+            "voice": _app_config.TTS_VOICE,
+            "base_url": _app_config.TTS_BASE_URL,
+        },
+        "agent": {
+            "idle_timeout": _app_config.AGENT_IDLE_TIMEOUT,
+            "idle_interval_min": _app_config.AGENT_IDLE_INTERVAL_MIN,
+            "idle_interval_max": _app_config.AGENT_IDLE_INTERVAL_MAX,
+        },
+        "memory": {
+            "short_term_capacity_base": _app_config.SHORT_TERM_CAPACITY_BASE,
+            "short_term_capacity_dynamic": _app_config.SHORT_TERM_CAPACITY_DYNAMIC,
+            "short_term_capacity_max": _app_config.SHORT_TERM_CAPACITY_MAX,
+            "enable_vector_memory": _app_config.ENABLE_VECTOR_MEMORY,
+            "forgetting_strategy": _app_config.FORGETTING_STRATEGY,
+            "forgetting_max_capacity": _app_config.FORGETTING_MAX_CAPACITY,
+            "forgetting_aggressiveness": _app_config.FORGETTING_AGGRESSIVENESS,
+            "enable_wal_logging": _app_config.ENABLE_WAL_LOGGING,
+        },
+        "websocket": {
+            "port": _app_config.WS_PORT,
+            "enable_jsonrpc": _app_config.ENABLE_JSONRPC_RESPONSE,
+        },
+    }
+
+
+def validate_config() -> bool:
+    return _app_config.validate()
+
+
+# ── 启动时打印 ──
+if _app_config.DEBUG:
     print(f"[Config] 环境变量 APP_ENV={os.environ.get('APP_ENV', 'development')}")
-    print(f"[Config] WebSocket 端口: {WS_PORT}")
-    print(f"[Config] JSON-RPC 启用: {ENABLE_JSONRPC_RESPONSE}")
-    print(f"[Config] 调试模式: {DEBUG}")
-
-# ─── 配置验证（保持向后兼容） ───
-def validate_config():
-    """验证必要的配置是否已设置"""
-    missing_keys = []
-
-    # 检查DeepSeek配置
-    if not DEEPSEEK_API_KEY:
-        missing_keys.append("DEEPSEEK_API_KEY")
-
-    # 千问已废弃，不再强制要求
-    if QWEN_API_KEY:
-        print("[Config] Qwen API 已配置（已废弃，系统使用 DeepSeek 单模型）")
-
-    # 检查TTS配置
-    if not DASHSCOPE_API_KEY:
-        missing_keys.append("DASHSCOPE_API_KEY")
-
-    if missing_keys:
-        raise EnvironmentError(
-            f"以下环境变量未设置: {', '.join(missing_keys)}\n"
-            "请在.env文件中设置这些变量，或设置对应的环境变量。\n"
-            "示例.env文件内容:\n"
-            "DEEPSEEK_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-            "DASHSCOPE_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\n"
-            "\n可选配置（可使用默认值）:\n"
-            "DEEPSEEK_BASE_URL=https://api.deepseek.com/v1\n"
-            "DEEPSEEK_MODEL=deepseek-chat\n"
-            "TTS_MODEL=qwen3-tts-vd-realtime-2026-01-15\n"
-            "TTS_VOICE=qwen-tts-vd-live2d_girl-voice-20260413174053978-a5da\n"
-            "TTS_BASE_URL=wss://dashscope.aliyuncs.com/api-ws/v1/realtime"
-        )
-
-    # 检查API密钥格式
-    for key_name, key_value in [
-        ("DEEPSEEK_API_KEY", DEEPSEEK_API_KEY),
-        ("DASHSCOPE_API_KEY", DASHSCOPE_API_KEY)
-    ]:
-        if key_value and not key_value.startswith("sk-"):
-            print(f"[WARN] {key_name}格式异常，应以'sk-'开头，当前: {key_value[:8]}...")
-
-    print("[OK] 配置验证通过")
-    return True
+    print(f"[Config] WebSocket 端口: {_app_config.WS_PORT}")
+    print(f"[Config] JSON-RPC 启用: {_app_config.ENABLE_JSONRPC_RESPONSE}")
+    print(f"[Config] 调试模式: {_app_config.DEBUG}")
