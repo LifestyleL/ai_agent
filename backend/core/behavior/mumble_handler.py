@@ -3,11 +3,13 @@
 
 0 LLM调用，纯字典匹配，嘴比脑子快的"嘟囔"。
 当DeepSeek处理任务时，通过SUBCONSCIOUS_ACTION事件触发简短语气词。
+
+改造为类实例，消除模块级全局变量。
 """
 
 import time
 import random
-from core.event.event_bus import event_bus, EventType, Event, event_handler
+from core.event.event_bus import event_bus, EventType, Event
 
 # 嘟囔模板库
 MUMBLE_TEMPLATES = {
@@ -62,74 +64,75 @@ MUMBLE_TEMPLATES = {
     ]
 }
 
-# 上次嘟囔时间
-_last_mumble_time = 0
+
+class MumbleHandler:
+    """嘟囔处理器（类实例，无全局状态）"""
+
+    def __init__(self, tts_queue):
+        self._tts_queue = tts_queue
+        self._last_mumble_time = 0
+
+    def register(self, event_bus) -> None:
+        """注册到事件总线"""
+        event_bus.subscribe(EventType.SUBCONSCIOUS_ACTION, self._handle)
+        print("[MumbleHandler] 嘟囔处理器已注册")
+
+    def _handle(self, event: Event) -> None:
+        """处理潜意识动作事件"""
+        # 频率限制：最多每7秒才嘟囔一次
+        now = time.time()
+        if now - self._last_mumble_time < 7.0:
+            return
+
+        action = event.data.get("action")
+        if not action:
+            return
+
+        templates = MUMBLE_TEMPLATES.get(action)
+        if not templates:
+            templates = MUMBLE_TEMPLATES.get("thinking", ["让我想想……"])
+
+        self._last_mumble_time = now
+        mumble = random.choice(templates)
+
+        print(f"[MumbleHandler] 嘟囔: '{mumble}' (触发动作: {action})")
+
+        # 封死后门：强制所有声音走统一队列
+        try:
+            import queue
+            if self._tts_queue is not None:
+                tts_item = {"text": mumble, "emotion": "neutral"}
+                self._tts_queue.put(tts_item, timeout=1.0)
+                print(f"[MumbleHandler] 嘟囔已入队: '{mumble}'")
+            else:
+                print(f"[MumbleHandler] TTS队列尚未注入，跳过嘟囔")
+        except queue.Full:
+            print(f"[MumbleHandler] TTS队列已满，丢弃嘟囔: '{mumble}'")
+        except Exception as e:
+            print(f"[MumbleHandler] 嘟囔入队失败: {e}")
+
+    @staticmethod
+    def trigger_mumble(action: str, source: str = "manual"):
+        """手动触发嘟囔（供外部调用）"""
+        if action not in MUMBLE_TEMPLATES:
+            print(f"[MumbleHandler] 警告: 未知的动作类型 '{action}'")
+            return
+
+        event_bus.publish(
+            EventType.SUBCONSCIOUS_ACTION,
+            source=source,
+            action=action,
+            timestamp=time.time()
+        )
 
 
-@event_handler(EventType.SUBCONSCIOUS_ACTION)
-def handle_subconscious(event: Event):
-    """处理潜意识动作事件"""
-    global _last_mumble_time
-
-    # 铁律：无论DeepSeek内部多急，Qwen最多每7秒才嘟囔一次。保持从容。
-    now = time.time()
-    if now - _last_mumble_time < 7.0:
-        return
-
-    action = event.data.get("action")
-    if not action:
-        return
-
-    templates = MUMBLE_TEMPLATES.get(action)
-    if not templates:
-        # 如果没有匹配的动作，使用默认的"thinking"
-        templates = MUMBLE_TEMPLATES.get("thinking", ["让我想想……"])
-
-    _last_mumble_time = now
-    mumble = random.choice(templates)
-
-    print(f"[MumbleHandler] 嘟囔: '{mumble}' (触发动作: {action})")
-
-    # 直接发TTS，不需要经过Qwen大脑，这就是嘴比脑子快的"嘟囔"
-    # 封死后门：强制所有声音走统一队列，不再直接发布TTS_REQUESTED事件
-    try:
-        from core.agent import agent_driver
-        import queue
-        if agent_driver._global_tts_queue is not None:
-            # 队列项目包含文本和情感信息
-            tts_item = {"text": mumble, "emotion": "neutral"}
-            agent_driver._global_tts_queue.put(tts_item, timeout=1.0)
-            print(f"[MumbleHandler] 嘟囔已入队: '{mumble}'")
-        else:
-            print(f"[MumbleHandler] 全局TTS队列尚未初始化，跳过嘟囔")
-    except queue.Full:
-        print(f"[MumbleHandler] TTS队列已满，丢弃嘟囔: '{mumble}'")
-    except Exception as e:
-        print(f"[MumbleHandler] 嘟囔入队失败: {e}")
-
-
-def trigger_mumble(action: str, source: str = "manual"):
-    """
-    手动触发嘟囔（供外部调用）
-
-    Args:
-        action: 动作类型，必须是MUMBLE_TEMPLATES中的键
-        source: 触发源
-    """
-    if action not in MUMBLE_TEMPLATES:
-        print(f"[MumbleHandler] 警告: 未知的动作类型 '{action}'")
-        return
-
-    event_bus.publish(
-        EventType.SUBCONSCIOUS_ACTION,
-        source=source,
-        action=action,
-        timestamp=time.time()
-    )
-
-
-def register_mumble_handler():
-    """注册嘟囔处理器（已通过装饰器自动注册，此函数用于显式初始化）"""
-    print("[MumbleHandler] 潜意识嘟囔处理器已注册")
-    # 装饰器已自动注册，这里只是打印日志
-    return True
+# 向后兼容的模块级初始化函数（过渡期用）
+def init_mumble_handler(tts_queue):
+    """向后兼容——新代码应使用 MumbleHandler 类 + DI 容器"""
+    print("[MumbleHandler] 已通过模块级函数初始化（旧路径）")
+    import builtins
+    if not hasattr(builtins, '_global_mumble_handler'):
+        handler = MumbleHandler(tts_queue=tts_queue)
+        from core.event.event_bus import event_bus
+        handler.register(event_bus)
+        setattr(builtins, '_global_mumble_handler', handler)

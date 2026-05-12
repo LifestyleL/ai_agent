@@ -1,6 +1,6 @@
 from typing import Dict, Any
 from plugins.base_tool import BaseTool
-from core.memory.memory_core import MemoryCore
+from core.memory.memory_facade import MemoryFacade as MemoryCore
 
 
 class ReadFileAdapter(BaseTool):

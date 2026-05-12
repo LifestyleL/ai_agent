@@ -6,7 +6,6 @@
 """
 
 import time
-import random
 from typing import Dict, Any, Optional, Tuple
 from datetime import datetime
 import config
@@ -25,7 +24,7 @@ class TriggerPolicy:
         # 从配置读取各层窗口
         self.window_continuation = getattr(config, 'SPONTANEOUS_WINDOW_CONTINUATION', (8, 30))
         self.window_emotional = getattr(config, 'SPONTANEOUS_WINDOW_EMOTIONAL', (30, 120))
-        self.window_goal = getattr(config, 'SPONTANEOUS_WINDOW_GOAL', (60, 300))
+        self.window_goal = getattr(config, 'SPONTANEOUS_WINDOW_GOAL', (60, 900))
         self.window_silence = getattr(config, 'SPONTANEOUS_MIN_SILENCE', 300)
 
     # ─── 公共 API ───
@@ -120,7 +119,7 @@ class TriggerPolicy:
         if result["should_trigger"]:
             # 深夜不触发已在上面处理，这里无需重复
             self._record(result)
-            print(f"[TriggerPolicy V5.0] 触发: {result['trigger_reason']} "
+            print(f"[TriggerPolicy V5.0] 评估通过: {result['trigger_reason']} "
                   f"(层: {result['trigger_layer']}, 优先级: {result['priority']}, "
                   f"情绪: {emotion_type}/{emotion_strength:.1f})")
 
@@ -130,52 +129,37 @@ class TriggerPolicy:
 
     def _evaluate_layer_continuation(self, silence: float, etype: int, estrength: float,
                                      short_term_count: int) -> bool:
-        """Layer 1: 对话延续 —— AI 觉得话没说完，自然追问"""
+        """Layer 1: 对话延续 —— 有对话内容且在时间窗口内"""
         low, high = self.window_continuation
-        if silence < low:
+        if silence < low or silence > high:
             return False
-        # 超过窗口上限，降级到下一层
-        if silence > high:
-            return False
-
-        # 基础概率 0.5，情绪调制
-        base = 0.5
-        # 开心时更主动，难过时减少
-        emotion_mod = {0: 0.0, 1: 0.2, 2: -0.15, 3: 0.1}.get(etype, 0.0)
-        # 有短期记忆内容时更可能延续
-        context_bonus = 0.1 if short_term_count >= 3 else 0.0
-        prob = min(0.9, base + emotion_mod + context_bonus)
-        return random.random() < prob
+        # 确定性：必须有至少 3 轮对话内容才考虑延续
+        return short_term_count >= 3
 
     def _evaluate_layer_emotional(self, silence: float, etype: int, estrength: float) -> bool:
-        """Layer 2: 情绪冲动 —— AI 情绪高涨，想说点什么"""
+        """Layer 2: 情绪冲动 —— 情绪显著波动且非平静"""
         low, high = self.window_emotional
         if silence < low or silence > high:
             return False
-        # 情绪太弱不触发（strength < 2.5 表示几乎没情绪）
-        if estrength < 2.5:
+        # 确定性：情绪强度 ≥ 5 才可能触发（有明显情绪）
+        if estrength < 5.0:
             return False
-        # 概率 = 情绪强度 / 10（max 0.7）
-        prob = min(0.7, estrength / 10.0)
-        return random.random() < prob
+        # 平静情绪不触发（没话想说）
+        if etype == 0:
+            return False
+        return True
 
     def _evaluate_layer_goal(self, silence: float, estrength: float) -> bool:
-        """Layer 3: 目标驱动 —— GoalTracker 有明确话题目标"""
+        """Layer 3: 目标驱动 —— 有 goal 且在时间窗口内"""
         low, high = self.window_goal
         if silence < low or silence > high:
             return False
-        prob = 0.5 + estrength * 0.03
-        return random.random() < min(0.8, prob)
+        # 确定性：有 goal 就触发（has_goal 已在 evaluate 层判断）
+        return True
 
     def _cold_silence_probability(self, silence: float, etype: int) -> bool:
-        """Layer 4: 冷场填补 —— 沉默太久，概率随沉默时长增长"""
-        # 沉默超过窗口后，每分钟增加5%概率
-        extra_minutes = max(0, silence - self.window_silence) / 60
-        prob = min(0.7, 0.1 + extra_minutes * 0.05)
-        # 开心时稍微降低冷场概率（不急着打断用户）
-        if etype == 1:
-            prob *= 0.8
-        return random.random() < prob
+        """Layer 4: 冷场填补 —— 沉默超过窗口阈值"""
+        return silence >= self.window_silence
 
     # ─── 记录 ───
 

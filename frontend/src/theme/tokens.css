@@ -1,0 +1,95 @@
+/* ===== Yume AI Design Tokens ===== */
+:root {
+  /* ---- 主色调 ---- */
+  --color-primary: #ff77aa;
+  --color-primary-hover: #ff5599;
+  --color-danger: #e81123;
+
+  /* ---- 背景层级 ---- */
+  --bg-transparent: #1a1a2e;
+  --bg-base: rgba(15, 12, 24, 0.92);
+  --bg-panel: rgba(20, 20, 30, 0.92);
+  --bg-card: rgba(255, 255, 255, 0.06);
+  --bg-card-hover: rgba(255, 255, 255, 0.10);
+  --bg-menu: rgba(24, 22, 36, 0.96);
+  --bg-bubble: rgba(18, 16, 28, 0.82);
+  --bg-input: rgba(18, 16, 28, 0.85);
+  --bg-button: rgba(0, 0, 0, 0.45);
+  --bg-button-top: rgba(0, 0, 0, 0.35);
+  --bg-dragbar: rgba(15, 12, 24, 0.25);
+  --bg-dragbar-hover: rgba(15, 12, 24, 0.55);
+  --bg-launcher: rgba(15, 12, 24, 0.94);
+  --bg-voice-active: rgba(255, 119, 170, 0.7);
+
+  /* ---- 文字 ---- */
+  --text-primary: #e8e8e8;
+  --text-secondary: #e0e0e0;
+  --text-muted: #ccc;
+  --text-dim: #aaa;
+  --text-subtle: #888;
+  --text-very-subtle: #666;
+  --text-white: #fff;
+
+  /* ---- 边框 ---- */
+  --border-subtle: rgba(255, 255, 255, 0.08);
+  --border-light: rgba(255, 255, 255, 0.10);
+  --border-default: rgba(255, 255, 255, 0.15);
+  --border-visible: rgba(255, 255, 255, 0.25);
+  --border-active: rgba(255, 255, 255, 0.30);
+  --border-focus: rgba(255, 255, 255, 0.20);
+
+  /* ---- 圆角 ---- */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
+  --radius-xl: 12px;
+  --radius-2xl: 18px;
+  --radius-3xl: 24px;
+  --radius-full: 50%;
+
+  /* ---- 间距 ---- */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --space-2xl: 32px;
+
+  /* ---- 阴影 ---- */
+  --shadow-menu: 0 8px 32px rgba(0, 0, 0, 0.45);
+  --shadow-bubble: 0 4px 20px rgba(0, 0, 0, 0.30);
+  --shadow-button: 0 4px 6px rgba(0, 0, 0, 0.30);
+
+  /* ---- 模糊 ---- */
+  --blur-light: blur(4px);
+  --blur-medium: blur(6px);
+  --blur-heavy: blur(12px);
+  --blur-xheavy: blur(16px);
+
+  /* ---- 字体 ---- */
+  --font-family: 'Segoe UI', system-ui, sans-serif;
+  --font-size-xs: 12px;
+  --font-size-sm: 13px;
+  --font-size-base: 14px;
+  --font-size-md: 15px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-2xl: 42px;
+
+  /* ---- 过渡 ---- */
+  --transition-fast: 0.12s;
+  --transition-normal: 0.15s;
+  --transition-medium: 0.2s;
+  --transition-slow: 0.3s;
+
+  /* ---- z-index 层级 ---- */
+  --z-canvas: 0;
+  --z-dragbar: 999;
+  --z-toolbar: 1000;
+  --z-subtitle: 1400;
+  --z-bubble: 1500;
+  --z-launcher: 2000;
+  --z-sound-btn: 3000;
+  --z-settings: 3000;
+  --z-menu: 5000;
+}

@@ -35,6 +35,7 @@ class ThinkOrchestrator:
         memory = deps.resolve("memory")
         emotion = deps.resolve("emotion")
         llm = deps.resolve("llm")
+        vision_llm = deps.resolve("vision_llm")
         dispatcher = deps.resolve("response_dispatcher")
         registry = deps.resolve("tool_registry")
         prompt_builder = deps.resolve("prompt_builder")
@@ -55,7 +56,7 @@ class ThinkOrchestrator:
             MemoryRetrieveStage(memory_core=memory, emotion_engine=emotion, dispatcher=dispatcher),
             SkillMatchStage(matcher=skill_matcher),
             PromptBuildStage(),
-            LLMStreamStage(llm_api=llm, dispatcher=dispatcher),
+            LLMStreamStage(llm_api=llm, vision_llm=vision_llm, dispatcher=dispatcher),
             RecallDetectStage(query_executor=_QueryExecutorImpl(registry)),
             FinalizeStage(memory_core=memory, dispatcher=dispatcher, goal_tracker=goal_tracker),
         ]
@@ -90,12 +91,12 @@ class ThinkOrchestrator:
         tts_manager.current_emotion = emotion_label
         frontend.send_live2d_cmd("emotion", emotion=emotion_label)
 
-        # 用户主动 look：LLM 意图分类 → 截图+VLM
-        visual_look = ""
+        # 用户主动 look：LLM 意图分类 → 截图（raw base64 直接给主 VLM）
+        screenshot_b64 = ""
         if await _detect_look_intent_async(user_input, llm):
             try:
                 observer = self._container.resolve("visual_observer")
-                visual_look = await observer.request_look()
+                screenshot_b64 = await observer.request_look()
             except Exception as e:
                 logger.warning("[ThinkOrchestrator] request_look 失败: %s", e)
 
@@ -104,10 +105,11 @@ class ThinkOrchestrator:
             original_user_input=user_input,
             deep_recall_result=deep_recall_result,
             recall_round=round_count,
+            screenshot_b64=screenshot_b64,
             memory_context={
                 "recall_injection": recall_injection,
                 "emotion_label": emotion_label,
-                "visual_look": visual_look,
+                "visual_look": "",  # 不再用文字描述，主 VLM 直接看图
             },
         )
 
@@ -171,6 +173,7 @@ class ThinkOrchestrator:
         emotion_label = context.get("spontaneous_emotion", "neutral")
         ft = context.get("follow_up_type")
         lw_ctx = context.get("lightweight_context")
+        tts_streamed = context.get("tts_streamed", False)
 
         spontaneous_engine = self._container.resolve("spontaneous_engine")
         if ft and lw_ctx and hasattr(spontaneous_engine, 'content_generator'):
@@ -178,6 +181,7 @@ class ThinkOrchestrator:
                 enriched = await spontaneous_engine.content_generator.generate_with_context(ft, lw_ctx)
                 if enriched:
                     text = enriched
+                    tts_streamed = spontaneous_engine.content_generator.last_was_streamed or tts_streamed
             except Exception:
                 pass
 
@@ -187,7 +191,8 @@ class ThinkOrchestrator:
         frontend = self._container.resolve("frontend")
         memory = self._container.resolve("memory")
 
-        dispatcher.enqueue_tts(text, emotion_label)
+        if not tts_streamed:
+            dispatcher.enqueue_tts(text, emotion_label)
         dispatcher.send_to_frontend(text, "chunk")
         frontend.send_live2d_cmd("emotion", emotion=emotion_label)
         memory.add_short_term("assistant", text)

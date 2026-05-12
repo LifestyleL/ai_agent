@@ -5,21 +5,20 @@ import sqlite3
 import os
 import time
 import random
-from core.memory.memory_core import MemoryCore
+from core.memory.memory_facade import MemoryFacade as MemoryCore
 from core.event.event_bus import event_bus, EventType, Event
-from api.netwebsocket.ws_server import ws_instance
 # [FIX] 修正：直接定位到 monologue.db 的实际位置
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "services", "tts", "monologue.db")
 
 class Voice:
-    def __init__(self, tts, llm=None, collaborator=None):
+    def __init__(self, tts, llm=None):
         self.tts = tts
-        self.llm = llm  # 千问模型（备用）
-        self.collaborator = collaborator  # 协作管理器（优先使用）
+        self.llm = llm
+        self.send_queue = None  # 由 main.py 注入 WSServer.send_queue
         self._tts_done_event = threading.Event()
 
-        if not self.llm and not self.collaborator:
-            raise ValueError("必须提供llm或collaborator参数")
+        if not self.llm:
+            raise ValueError("必须提供llm参数")
 
         # 订阅TTS请求事件
         def handle_tts_request(event: Event):
@@ -38,8 +37,9 @@ class Voice:
         try:
             # 剥离括号内的旁白/舞台指示（不发音内容）
             text = re.sub(r'[（(][^）)]*[）)]', '', text).strip()
-            if not text:
-                return  # 空文本静默跳过
+            # 空文本或纯标点文本静默跳过（避免 TTS 清洗后为空）
+            if not text or re.match(r'^[\s。！？.!?\n，,；：、…\.\-_～~]+$', text):
+                return
 
             print(f"[DEBUG] [Voice] 合成分段: '{text[:30]}...' (情绪: {emotion})")
 
@@ -66,6 +66,11 @@ class Voice:
             mouth_frames = None
 
             while time.time() - start_time < max_wait_time:
+                # 中断检查：收到中断信号后清除标志，确保下一句能正常合成
+                if hasattr(self.tts, '_abort_flag') and self.tts._abort_flag.is_set():
+                    self.tts._abort_flag.clear()
+                    print("[Voice] 收到中断信号，放弃当前合成")
+                    return
                 # 先检查锁状态（如果属性可访问）
                 if hasattr(self.tts, '_is_speaking') and self.tts._is_speaking:
                     # 锁被占用，打印等待日志，然后等一下
@@ -106,10 +111,12 @@ class Voice:
             visemes = [f for f in mouth_frames if f['v'] > 0.01 or f == mouth_frames[0]]
 
             # 统一通过 WebSocket 发送队列发送音频数据到前端
-            from api.netwebsocket.ws_server import ws_instance
-            message = {"type": "TTS_AUDIO", "audio_base64": audio_b64, "visemes": visemes}
+            if self.send_queue is None:
+                print("[WARN] [Voice] send_queue 未注入，跳过音频发送")
+                return
+            message = {"type": "TTS_AUDIO", "audio_base64": audio_b64, "visemes": visemes, "text": text}
             try:
-                ws_instance.send_queue.put(message)
+                self.send_queue.put(message)
                 print(f"[Voice] 分段音频已入队: '{text[:20]}...'")
             except Exception as e:
                 print(f"[ERROR] [Voice] 音频入队失败: {e}")
@@ -130,7 +137,6 @@ class Voice:
                 self._speak_segment(text, emotion)
             finally:
                 self._tts_done_event.set()
-                self._tts_done_event.clear()
 
         threading.Thread(target=run, daemon=True).start()
 
@@ -151,6 +157,13 @@ class Voice:
         except Exception as e:
             print(f"[WARN] 数据库读取失败: {e}")
         return None
+
+    def interrupt(self):
+        """立即中断当前语音合成"""
+        if hasattr(self.tts, '_abort_flag'):
+            self.tts._abort_flag.set()
+        self._tts_done_event.set()
+        print("[Voice] 收到中断信号")
 
     def _parse_script(self, script):
         """剧本拆解器：合并短句，减少TTS调用次数"""
@@ -201,8 +214,8 @@ class Voice:
                 motion_name = cmd["value"]
                 print(f"[ACTION] [动作触发] 切换状态至: {motion_name}")
                 try:
-                    from api.netwebsocket.ws_server import ws_instance
-                    ws_instance.send_queue.put({"type": "LIVE2D_CMD", "cmd": "motion", "motion": motion_name})
+                    if self.send_queue:
+                        self.send_queue.put({"type": "LIVE2D_CMD", "cmd": "motion", "motion": motion_name})
                 except Exception as e:
                     print(f"[WARN] 状态切换失败: {e}")
                 time.sleep(1.0)
@@ -283,12 +296,10 @@ class Voice:
         )
 
         try:
-            # 使用千问模型（如果collaborator不存在或失败）
-            llm_to_use = self.llm if self.llm else (self.collaborator.llm_qwen if hasattr(self, 'collaborator') and self.collaborator else None)
-            if not llm_to_use:
+            if not self.llm:
                 raise ValueError("没有可用的LLM模型")
 
-            thought = llm_to_use.ask_with_system(sys_prompt, user_prompt, temperature=0.9).strip().strip('"').strip("'")
+            thought = self.llm.ask_with_system(sys_prompt, user_prompt, temperature=0.9).strip().strip('"').strip("'")
             if not thought or thought.isspace():
                 print("[ERROR] 生成的独白为空，跳过")
                 return None
@@ -312,10 +323,13 @@ class Voice:
         sentences = []
         current_sentence = ""
 
-        for char in text:
+        for i, char in enumerate(text):
             current_sentence += char
             # 遇到断句符号立即切分（句号、感叹号、问号、换行）
             if char in "。！？.!?\n":
+                # 英文句号如果是省略号的一部分，不切分（避免 ... 被切成多个段）
+                if char == '.' and i + 1 < len(text) and text[i + 1] == '.':
+                    continue
                 sentences.append(current_sentence)
                 current_sentence = ""
             # 如果还没遇到断句符号，但已经超过最大长度，强制在逗号处切分
@@ -424,14 +438,16 @@ class Voice:
                                     self._speak_segment(segment, emotion=emotion)
                                 except Exception as e:
                                     print(f"[WARN] [Voice] 分段 {i+1} 合成失败: {e}")
-                                # 等待当前分段完成（除了最后一个）
+                                # 等待前端消费队列中的音频（背压控制，防止一次性塞满前端）
                                 if i < len(segments) - 1:
-                                    time.sleep(0.2)  # 分段间短暂间隔，避免WebSocket缓冲区溢出
+                                    waited = 0
+                                    while self.send_queue and self.send_queue.qsize() > 1 and waited < 10:
+                                        time.sleep(0.2)
+                                        waited += 0.2
                     except Exception as e:
                         print(f"[ERROR] 分段合成线程异常: {e}")
                     finally:
                         # 所有分段完成后设置事件
                         self._tts_done_event.set()
-                        self._tts_done_event.clear()
 
                 threading.Thread(target=speak_segmented, daemon=True).start()

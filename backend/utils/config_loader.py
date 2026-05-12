@@ -73,7 +73,6 @@ class ConfigLoader:
 
         # 敏感信息映射：环境变量名 → 配置路径
         sensitive_mappings = {
-            "QWEN_API_KEY": ("ai", "qwen", "api_key"),
             "DEEPSEEK_API_KEY": ("ai", "deepseek", "api_key"),
             "DASHSCOPE_API_KEY": ("tts", "api_key"),
             # TTS配置
@@ -81,7 +80,6 @@ class ConfigLoader:
             "TTS_MODEL": ("tts", "model"),
             "TTS_BASE_URL": ("tts", "base_url"),
             # AI模型配置
-            "QWEN_MODEL": ("ai", "qwen", "model"),
             "DEEPSEEK_MODEL": ("ai", "deepseek", "model"),
         }
 
@@ -99,7 +97,7 @@ class ConfigLoader:
         d[keys[-1]] = value
 
     def get(self, *keys, default=None) -> Any:
-        """获取配置值，支持点分路径: get('ai', 'qwen', 'model')"""
+        """获取配置值，支持点分路径: get('ai', 'deepseek', 'model')"""
         d = self._config
         for key in keys:
             if not isinstance(d, dict) or key not in d:

@@ -19,6 +19,7 @@ from .interrupt_handler import InterruptHandler, InterruptType
 from .engagement_profile import EngagementProfile, EngagementParameters, load_profiles_dict, PRESET_PROFILES_PATH
 from .engagement_analyzer import UserEngagementAnalyzer
 from .silence_gate import SilenceGate, InternalEvent, Decision, detect_short_reply
+from .cognitive_position import CognitivePosition, CognitiveFrame, CognitiveMode
 
 from ..memory.memory_facade import MemoryFacade as MemoryCore
 from ..event.event_bus import event_bus, EventType, Event, event_handler
@@ -49,7 +50,7 @@ def _longest_common_substring(a: str, b: str) -> str:
 class SpontaneousEngine:
     """自驱动引擎主类"""
 
-    def __init__(self, memory_core: MemoryCore, llm=None, goal_tracker=None, visual_observer=None):
+    def __init__(self, memory_core: MemoryCore, llm=None, goal_tracker=None, visual_observer=None, tts_manager=None):
         self.memory_core = memory_core
         self.llm = llm
         self.goal_tracker = goal_tracker  # GoalTracker 实例（可选）
@@ -59,7 +60,7 @@ class SpontaneousEngine:
         emotion_engine = memory_core._emotion_engine if hasattr(memory_core, '_emotion_engine') else None
         self.context_reader = ContextReader(memory_core)
         self.trigger_policy = TriggerPolicy(emotion_engine=emotion_engine)
-        self.content_generator = ContentGenerator(llm)
+        self.content_generator = ContentGenerator(llm, tts_manager=tts_manager)
         self.freq_limiter = FreqLimiter()
         self.response_tracker = ResponseTracker()
         self.interrupt_handler = InterruptHandler()
@@ -72,6 +73,9 @@ class SpontaneousEngine:
 
         # SilenceGate 语境门控
         self._silence_gate = None  # 在 __init__ 末尾初始化
+
+        # CognitivePosition 认知定位器
+        self._cognitive = CognitivePosition(llm=self.llm)
 
         # 内部事件队列
         self._internal_events: list = []
@@ -296,7 +300,13 @@ class SpontaneousEngine:
 
                 # 自动推断更新
                 await self._auto_update_profile()
-                await asyncio.sleep(self.check_interval)
+
+                # 有视觉事件待处理时加快轮询，否则按正常间隔
+                has_visual_pending = any(
+                    e.type == "visual_observation" for e in self._internal_events
+                )
+                sleep_time = min(self.check_interval, 5) if has_visual_pending else self.check_interval
+                await asyncio.sleep(sleep_time)
             except asyncio.CancelledError:
                 break
             except Exception as e:
@@ -352,15 +362,56 @@ class SpontaneousEngine:
             )
 
             if gate_result.decision != Decision.SPEAK:
+                # 视觉观察器存在时不用长退避，新事件随时可能到达
+                observer_active = self._visual_observer is not None
                 if gate_result.decision == Decision.WAIT and gate_result.wait_seconds > 0:
-                    # 延长检查间隔
                     self.last_check_time = now + gate_result.wait_seconds - self.check_interval
                 elif gate_result.decision in (Decision.SILENCE, Decision.SILENCE_LONG):
-                    # 静默时退避：避免无意义的短间隔重检
-                    backoff = 120 if gate_result.decision == Decision.SILENCE else 300
-                    self.last_check_time = now + backoff - self.check_interval
+                    if observer_active:
+                        self.last_check_time = now  # 不退避，下一轮立即检查
+                    else:
+                        backoff = 120 if gate_result.decision == Decision.SILENCE else 300
+                        self.last_check_time = now + backoff - self.check_interval
                 print(f"[SpontaneousEngine] 语境门控阻止: {gate_result.decision.value} - {gate_result.reason}")
                 return
+
+        # 视觉观察上下文注入（在认知定位之前，因为定位需要知道画面描述）
+        visual_obs = ""
+        if self._visual_observer and self._visual_observer.last_description:
+            visual_obs = self._visual_observer.last_description
+            context["visual_observation"] = visual_obs
+            if self.goal_tracker:
+                self.goal_tracker.set_visual(visual_obs)
+
+        # 4. 认知定位：确定「此刻该以什么身份说话」
+        user_just_spoke = (
+            self.trigger_policy.last_user_activity > self.trigger_policy.last_spoke_time
+            and (now - self.trigger_policy.last_user_activity) < 60
+        )
+        user_text = context.get("last_user_text", "")
+        visual_changed = any(e.type == "visual_observation" for e in events)
+        silence_duration = trigger_result.get("silence_duration", 0)
+        best_goal_text = self.goal_tracker.get_best_goal() if self.goal_tracker else ""
+
+        cognitive_frame = self._cognitive.locate(
+            user_just_spoke=user_just_spoke,
+            user_text=user_text,
+            visual_changed=visual_changed,
+            visual_description=visual_obs,
+            silence_seconds=silence_duration,
+            has_goal=bool(best_goal_text),
+            goal_text=best_goal_text,
+            internal_events=events,
+            short_term_count=short_term_count,
+            hour=time.localtime().tm_hour,
+        )
+
+        if cognitive_frame.mode == CognitiveMode.SILENT:
+            print(f"[SpontaneousEngine] 认知定位: SILENT - {cognitive_frame.reason}")
+            return
+
+        print(f"[SpontaneousEngine] 认知定位: {cognitive_frame.mode.value} "
+              f"(置信度={cognitive_frame.confidence:.2f}) - {cognitive_frame.reason}")
 
         # 5. 主动搜索记忆，给内容生成提供真实话题材料
         memory_cards = []
@@ -375,14 +426,40 @@ class SpontaneousEngine:
                 print(f"[SpontaneousEngine] 记忆检索异常: {e}")
         context["memory_cards"] = memory_cards
 
-        # 视觉观察上下文注入
-        if self._visual_observer and self._visual_observer.last_description:
-            context["visual_observation"] = self._visual_observer.last_description
+        # 认知定位指令注入（给 ContentGenerator 的每个 prompt）
+        context["cognitive_hint"] = cognitive_frame.to_prompt_hint()
 
-        # 6. 生成内容：优先目标驱动（有目标时不必等高层触发）
+        # 检查是否有视觉观察事件（优先级高于 goal-driven）
+        has_visual_event = any(e.type == "visual_observation" for e in events)
+
+        # 6. 生成内容：视觉事件优先于目标驱动
         content_result = None
 
-        if self.goal_tracker:
+        if has_visual_event and visual_obs:
+            # 视觉观察写入短期记忆，让 yume 知道刚才看到了什么
+            self.memory_core.add_short_term("system", f"[刚才看到的画面] {visual_obs}")
+            print(f"[SpontaneousEngine] 视觉事件驱动发言: {visual_obs[:60]}...")
+            # 传递当前目标和最近对话，让视觉观察有目的而非死板描述
+            best_goal = self.goal_tracker.get_best_goal() if self.goal_tracker else ""
+            recent_dialogue = context.get("raw_short_term", [])
+            goal_text = await self.content_generator.generate_from_visual(
+                visual_obs, context, best_goal=best_goal, recent_dialogue=recent_dialogue
+            )
+            if goal_text and goal_text.strip().upper() != "SKIP":
+                content_result = {
+                    "text": goal_text,
+                    "source": "visual_observation",
+                    "emotion": "surprise",
+                    "action": "",
+                    "priority": 5
+                }
+            else:
+                # 视觉生成 SKIP/失败时加冷却，防止下一 tick 模板抢话
+                self.last_check_time = now + 30
+                print(f"[SpontaneousEngine] 视觉生成跳过，冷却 30s")
+
+        # 有视觉事件时，优先用画面生成；不降到记忆/模板，避免脱离当前场景
+        if content_result is None and not has_visual_event and self.goal_tracker:
             best_goal = self.goal_tracker.get_best_goal()
             if best_goal:
                 print(f"[SpontaneousEngine] 尝试目标驱动发言: {best_goal[:60]}...")
@@ -395,15 +472,18 @@ class SpontaneousEngine:
                         "action": "",
                         "priority": trigger_result["priority"]
                     }
+                    # 标记目标已说出，下次不再重复
+                    self.goal_tracker.mark_goal_spoken(best_goal)
 
-        if content_result is None:
+        # 无视觉事件、无目标时，才用记忆/模板生成（冷场打破等场景）
+        if content_result is None and not has_visual_event:
             use_llm = trigger_result["priority"] >= 4
             content_result = await self.content_generator.generate(
                 {**context, "trigger_info": trigger_result},
                 use_llm=use_llm
             )
 
-        if not content_result["text"]:
+        if not content_result or not content_result.get("text"):
             print("[SpontaneousEngine] 内容生成失败")
             return
 
@@ -419,8 +499,11 @@ class SpontaneousEngine:
         self._recently_spoken.append(text)
         if len(self._recently_spoken) > 10:
             self._recently_spoken.pop(0)
+        self._cognitive.update_streak(cognitive_frame.mode)
 
         # 8. 发言
+        tts_streamed = self.content_generator.last_was_streamed
+        self.content_generator.last_was_streamed = False  # 消费标志
         speech_context = {
             "source": content_result["source"],
             "priority": trigger_result["priority"],
@@ -428,7 +511,8 @@ class SpontaneousEngine:
             "silence_duration": trigger_result.get("silence_duration", 0),
             "emotion": content_result.get("emotion", "neutral"),
             "action": content_result.get("action", ""),
-            "time": datetime.now().strftime("%H:%M:%S")
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "tts_streamed": tts_streamed,
         }
 
         self._last_was_spontaneous = True
@@ -453,9 +537,14 @@ class SpontaneousEngine:
     # ─── 内部事件收集 ───
 
     def _push_internal_event(self, event_type: str, strength: float, summary: str = "", data: dict = None):
-        """添加内部事件到队列"""
+        """添加内部事件到队列。视觉事件到达时重置退避，清旧目标，立即唤醒引擎。"""
         event = InternalEvent(type=event_type, strength=strength, summary=summary, data=data or {})
         self._internal_events.append(event)
+        if event_type == "visual_observation":
+            self.last_check_time = 0  # 下一轮立即检查，不被退避耽误
+            # 视觉观察是最新信息来源，清除旧目标让位
+            if self.goal_tracker:
+                self.goal_tracker.clear_stale_goals()
 
     def _collect_internal_events(self) -> List[InternalEvent]:
         """收集并清空内部事件队列"""

@@ -7,6 +7,7 @@
 import asyncio
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Optional
 
@@ -25,9 +26,17 @@ def _build_file_index() -> str:
     diary_dir = agent_dir / "diary" / "daily"
     diary_files = sorted(diary_dir.glob("*.md"), reverse=True) if diary_dir.exists() else []
     if diary_files:
-        lines.append("## 日记文件 (diary/daily/)")
+        lines.append("## 日记文件 (diary/daily/) — 用 read_file 读取，路径格式: diary/daily/日期.md")
         for f in diary_files[:14]:  # 最近两周
-            lines.append(f"  - {f.name}")
+            # 尝试提取标题，给 LLM 更多信息决定读哪个文件
+            try:
+                content = f.read_text(encoding="utf-8")
+                title_match = re.search(r'^#\s*(.*)', content)
+                title = title_match.group(1).strip() if title_match else f.stem
+                title = title.replace("对话日记", "").strip()
+            except Exception:
+                title = f.stem
+            lines.append(f"  - diary/daily/{f.name}  ({title})")
         if len(diary_files) > 14:
             lines.append(f"  ... 共 {len(diary_files)} 篇日记")
 

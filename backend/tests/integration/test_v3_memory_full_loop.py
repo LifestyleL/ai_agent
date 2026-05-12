@@ -52,7 +52,7 @@ sentence_transformers.SentenceTransformer = MockSentenceTransformer
 
 # 现在导入使用 SentenceTransformer 的模块
 from backend.core.emotion_engine import EmotionEngine
-from backend.core.memory_core import MemoryCore
+from backend.core.memory.memory_facade import MemoryFacade as MemoryCore
 from backend.core.vector_memory import VectorMemory
 from backend.core.long_term_memory.manager import LongTermMemoryManager
 from backend.core.long_term_memory.diary_writer import DiaryWriter

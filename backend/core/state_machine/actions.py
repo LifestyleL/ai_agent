@@ -124,13 +124,13 @@ def create_real_think_action(
     registry: Any,
     driver_instance: Any,
     llm_deepseek: Optional[LLMAPI] = None,
+    llm_vision: Optional[LLMAPI] = None,
 ):
     """旧版 THINK Action — ws_server.py 过渡期使用"""
     import re
 
     if llm_deepseek is None:
         llm_deepseek = LLMFactory.get_default()
-    llm_speaker = LLMFactory.get_default()
 
     from backend.core.think_pipeline.recall_detect import (
         _detect_recall_signal, _extract_query_goal, _MEMORY_SEARCH_PATTERN,
@@ -145,8 +145,9 @@ def create_real_think_action(
             text = context.get("spontaneous_text", "")
             emotion = context.get("spontaneous_emotion", "neutral")
             logger.info("[THINK] 自驱动快速通道: '%s...'", text[:30])
-            if driver_instance and hasattr(driver_instance, 'tts_manager'):
-                driver_instance.tts_manager.on_spontaneous_speech(text, {"emotion": emotion})
+            if not context.get("tts_streamed"):
+                if driver_instance and hasattr(driver_instance, 'tts_manager'):
+                    driver_instance.tts_manager.on_spontaneous_speech(text, {"emotion": emotion})
             if driver_instance and hasattr(driver_instance, 'frontend'):
                 driver_instance.frontend.send_live2d_cmd("emotion", emotion=emotion)
             if driver_instance and hasattr(driver_instance, 'memory_core'):
@@ -188,29 +189,32 @@ def create_real_think_action(
         if mc and hasattr(mc, '_emotion_engine') and mc._emotion_engine:
             emotion_label = mc._emotion_engine.type_to_label(mc._emotion_engine.type)
 
-        # 用户主动 look：LLM 意图分类 → 截图+VLM
-        visual_look = ""
+        # 双模型选择：有截图用 VLM，纯文本用快速模型
+        # 先用文本模型做意图分类（look intent 检测）
+        llm_speaker = llm_deepseek
+
+        # 用户主动 look：LLM 意图分类 → 截图（raw base64 直接给主 VLM）
+        screenshot_b64 = ""
         if await _detect_look_intent_async(user_input, llm_speaker):
             try:
                 from api.netwebsocket.ws_server import WSServer
                 ws = WSServer()
                 if hasattr(ws, 'visual_observer') and ws.visual_observer:
-                    visual_look = await ws.visual_observer.request_look()
+                    screenshot_b64 = await ws.visual_observer.request_look()
             except Exception as e:
                 logger.warning("[THINK] request_look 失败: %s", e)
+
+        # 有截图时切换到 VLM 多模态模型
+        if screenshot_b64 and llm_vision:
+            llm_speaker = llm_vision
 
         system_prompt = yume_template.format(
             persona=persona,
             emotion=emotion_label,
             time_context=structured.get("time_context", ""),
-            diary_memory=structured.get("diary_memory", ""),
-            precise_query=structured.get("precise_query", ""),
-            pre_search=structured.get("pre_search", ""),
-            deep_recall=structured.get("deep_recall", ""),
-            card_index=structured.get("card_index", ""),
-            diary_index=structured.get("diary_index", ""),
-            terrain=structured.get("terrain", ""),
-            visual_look=visual_look,
+            visual_observation=structured.get("visual_observation", ""),
+            compressed_history=mc.get_compressed_summary() if mc else "",
+            precise_query=structured.get("precise_query", "（大脑空空）"),
             history=history_str,
         )
 
@@ -221,9 +225,17 @@ def create_real_think_action(
             driver_instance.frontend.send_live2d_cmd("emotion", emotion=emotion_label)
 
         # 流式 LLM + 逐句 TTS
+        if screenshot_b64:
+            user_content: Any = [
+                {"type": "text", "text": user_input},
+                {"type": "image_url", "image_url": {"url": f"data:image/png;base64,{screenshot_b64}"}}
+            ]
+        else:
+            user_content = user_input
+
         messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_input},
+            {"role": "user", "content": user_content},
         ]
 
         response_text = ""
@@ -253,6 +265,7 @@ def create_real_think_action(
                         if hasattr(driver_instance, 'tts_manager'):
                             driver_instance.tts_manager.enqueue_text(sentence, emotion_label)
                             streamed_to_tts = True
+                            await asyncio.sleep(0)  # 让出事件循环，给队列消费者机会发送音频
 
             if pending.strip():
                 pending = _MEMORY_SEARCH_PATTERN.sub("", pending)

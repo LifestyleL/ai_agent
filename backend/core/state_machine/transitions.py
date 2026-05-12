@@ -1,4 +1,4 @@
-from backend.core.state_machine.state_machine import StateMachine, State, Event
+from core.state_machine.state_machine import StateMachine, State, Event
 
 def setup_base_transitions(sm: StateMachine):
     """配置基础的状态转移规则表"""
@@ -26,3 +26,17 @@ def setup_base_transitions(sm: StateMachine):
 
     # 如果执行出错，也回到空闲（兜底）
     sm.register_transition(State.THINK, Event.ERROR, State.IDLE)
+
+    # 自驱动引擎触发主动发言：从空闲直接进入思考
+    sm.register_transition(State.IDLE, Event.SPONTANEOUS_TRIGGER, State.THINK)
+    # 思考中遇到自发发言：自环，不改变状态（TTS 已直接入队）
+    sm.register_transition(State.THINK, Event.SPONTANEOUS_TRIGGER, State.THINK)
+    # 思考中遇到用户输入：自环，处理中的输入自然结束
+    sm.register_transition(State.THINK, Event.USER_INPUT, State.THINK)
+
+    # 任务完成从 IDLE/FINISH：自环/回 IDLE（自发发言等异步路径可能触发）
+    sm.register_transition(State.IDLE, Event.TASK_COMPLETE, State.IDLE)
+    sm.register_transition(State.FINISH, Event.TASK_COMPLETE, State.IDLE)
+
+    # 自驱动从 FINISH 触发
+    sm.register_transition(State.FINISH, Event.SPONTANEOUS_TRIGGER, State.THINK)

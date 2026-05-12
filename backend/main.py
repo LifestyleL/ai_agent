@@ -23,7 +23,7 @@ def _ensure_path():
 _ensure_path()
 
 from api.netwebsocket.ws_server import WSServer
-from config import WS_PORT, validate_config
+from config import WS_PORT, validate_config, DASHSCOPE_API_KEY, VISION_BASE_URL, VISION_MODEL
 
 _shutdown_requested = False
 
@@ -43,8 +43,9 @@ def _build_container():
     # ── 基础设施（startup_order 0） ──
     c.register_instance("event_bus", event_bus)
 
-    # ── LLM 单实例 ──
+    # ── LLM 双实例：文本（快速）+ 视觉（多模态） ──
     c.register("llm", lambda _: _make_llm(), startup_order=1)
+    c.register("vision_llm", lambda _: _make_vision_llm(), startup_order=1)
 
     # ── 纯数据 ──
     c.register("persona", lambda _: _make_persona(), startup_order=2)
@@ -92,7 +93,16 @@ def _build_container():
 
 def _make_llm():
     from backend.core.llm.llm_factory import LLMFactory
-    return LLMFactory.get_default()
+    return LLMFactory.get_default()  # DeepSeek，快速文本
+
+
+def _make_vision_llm():
+    from backend.core.llm.llm_factory import LLMFactory
+    return LLMFactory.get(
+        api_key=DASHSCOPE_API_KEY,
+        base_url=VISION_BASE_URL,
+        model=VISION_MODEL,
+    )  # Qwen VLM，多模态看图
 
 
 def _make_persona():
@@ -190,6 +200,7 @@ def _make_spontaneous_engine(c):
         memory_core=c.resolve("memory"),
         llm=c.resolve("llm"),
         goal_tracker=c.resolve("goal_tracker"),
+        tts_manager=c.resolve("tts_manager"),
     )
 
 
@@ -355,7 +366,12 @@ async def _start_legacy_architecture():
     ws_instance = WSServer()
     validate_config()
 
-    llm_deepseek = LLMFactory.get_default()
+    llm_text = LLMFactory.get_default()  # DeepSeek 快速文本
+    llm_vision = LLMFactory.get(
+        api_key=DASHSCOPE_API_KEY,
+        base_url=VISION_BASE_URL,
+        model=VISION_MODEL,
+    )  # Qwen VLM 多模态看图
 
     print("=" * 50)
     print("[1] [主线程] 准备拉起 Agent 后台线程...")
@@ -395,8 +411,9 @@ async def _start_legacy_architecture():
 
         print("[Main] 绑定真实 Action 引擎...")
         real_think = create_real_think_action(
-            state_machine=sm, registry=reg, driver_instance=driver, llm_deepseek=llm_deepseek)
-        real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg, llm_deepseek=llm_deepseek)
+            state_machine=sm, registry=reg, driver_instance=driver,
+            llm_deepseek=llm_text, llm_vision=llm_vision)
+        real_do_tool = create_real_do_tool_action(state_machine=sm, registry=reg, llm_deepseek=llm_text)
         sm.register_action(State.THINK, real_think)
         sm.register_action(State.DO_TOOL, real_do_tool)
         driver.state_machine = sm

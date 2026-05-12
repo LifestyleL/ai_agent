@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Yume AI</title>
+  <style>
+    /* 仅保留必须在此处的全局样式（theme 变量已在 base.css/tokens.css 中） */
+    html, body {
+      overflow: hidden;
+      margin: 0;
+      padding: 0;
+      background: var(--bg-transparent, #1a1a2e);
+      font-family: var(--font-family);
+      color: var(--text-primary);
+      -webkit-user-select: none;
+      user-select: none;
+    }
+
+    /* 浏览器模式（非 Electron）：给一个可见的深色背景 */
+    html.browser-mode body {
+      background: #1a1a2e;
+    }
+  </style>
+  <script>
+    if (!navigator.userAgent.includes('Electron')) {
+      document.documentElement.classList.add('browser-mode');
+    }
+  </script>
+  <script src="./Core/live2dcubismcore.js"></script>
+  <script type="module" crossorigin src="./assets/index-D0f9W7yG.js"></script>
+  <link rel="stylesheet" crossorigin href="./assets/index-DDyOmlZv.css">
+</head>
+<body>
+  <!-- yume-app LitElement 根组件接管全部 UI -->
+</body>
+</html>

@@ -3,8 +3,6 @@ app:
   debug: false
 
 ai:
-  qwen:
-    temperature: 0.8
   deepseek:
     temperature: 0.3
 

@@ -20,6 +20,7 @@ class Event(Enum):
     USER_CANCEL = "USER_CANCEL"
     TASK_COMPLETE = "TASK_COMPLETE"
     NEED_TOOL = "NEED_TOOL"
+    SPONTANEOUS_TRIGGER = "SPONTANEOUS_TRIGGER"
 
 TransitionKey = Tuple[str, str]  # (state_value, event_value) 避免跨模块枚举实例不一致
 
@@ -80,8 +81,7 @@ class StateMachine:
             except Exception as e:
                 print(f"[FSM] 错误: 执行 Action [{next_state.name}] 出错: {e}")
         else:
-            print(f"[FSM] 警告: 状态 {next_state.name} 没有注册 Action")
-            print(f"[FSM] 当前_actions字典: {list(self._actions.keys())}")
+            self.logger.debug(f"[FSM] 状态 {next_state.name} 没有注册 Action（终态/自环，正常）")
 
     # --- 以下为兼容旧代码保留的方法 ---
     def reset_for_new_round(self):
@@ -123,18 +123,3 @@ class StateMachine:
             "tool_usage_total": sum(self.tool_usage_count.values()),
             "tool_usage_detail": self.tool_usage_count.copy()
         }
-
-# 全局状态机实例（单例模式）
-_global_state_machine: Optional[StateMachine] = None
-
-def get_state_machine() -> StateMachine:
-    """获取全局状态机实例（单例）"""
-    global _global_state_machine
-    if _global_state_machine is None:
-        _global_state_machine = StateMachine()
-    return _global_state_machine
-
-def reset_global_state_machine():
-    """重置全局状态机（用于测试或重启）"""
-    global _global_state_machine
-    _global_state_machine = None

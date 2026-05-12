@@ -76,7 +76,7 @@ _KEY_MAP = {
 
     # Vision (VLM)
     "VISION_ENABLED": ("vision", "enabled"),
-    "VISION_MODEL": (("vision", "model"), "qwen3.5-plus"),
+    "VISION_MODEL": (("vision", "model"), "qwen3.5-omni-plus-2006-03-15"),
     "VISION_BASE_URL": (("vision", "base_url"), "https://dashscope.aliyuncs.com/compatible-mode/v1"),
     "VISION_API_KEY_ENV": (("vision", "api_key_env"), "DASHSCOPE_API_KEY"),
     "VISION_MAX_DESCRIPTION_CHARS": (("vision", "max_description_chars"), 120),
@@ -104,6 +104,13 @@ _KEY_MAP = {
     "CARD_KEYWORD_SCORE_WEIGHT": ("memory", "card", "keyword_score_weight"),
     "CARD_RECENCY_SCORE_WEIGHT": ("memory", "card", "recency_score_weight"),
     "CARD_IMPORTANCE_SCORE_WEIGHT": ("memory", "card", "importance_score_weight"),
+
+    # Context compression
+    "COMPRESSION_ENABLED": (("memory", "compression", "enabled"), True),
+    "COMPRESSION_TRIGGER_FILL_RATIO": (("memory", "compression", "trigger_fill_ratio"), 0.8),
+    "COMPRESSION_MAX_RECENT_KEEP": (("memory", "compression", "max_recent_keep"), 8),
+    "COMPRESSION_SUMMARY_MAX_CHARS": (("memory", "compression", "summary_max_chars"), 500),
+    "COMPRESSION_MIN_ENTRIES": (("memory", "compression", "min_entries_to_compress"), 10),
 
     # App
     "DEBUG": ("app", "debug"),

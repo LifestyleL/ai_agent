@@ -20,6 +20,13 @@ _ZH_STOP_WORDS: Set[str] = {
     "不", "很", "好", "还", "这", "那", "些", "得", "着", "过",
     "但", "因为", "所以", "然后", "如果", "虽然", "不过",
     "觉得", "知道", "应该", "可能", "已经", "比较", "一点",
+    # 记忆查询噪音词：这些碎片不应成为搜索关键词
+    "你记", "记得", "不记得", "还记得", "记不", "记得吗",
+    "查查", "查一下", "翻翻", "翻一下", "找到", "查到",
+    "讲讲", "说说", "帮我", "帮我查", "帮我找",
+    "聊聊", "讲一讲", "说一", "说说话", "说说话吗",
+    "发生过", "发生了什么", "有没有", "之前", "最近",
+    "怎么", "怎么样",
 }
 
 
@@ -96,3 +103,37 @@ def time_decay(ts: str, halflife_days: float = 7.0) -> float:
     """指数时间衰减，半衰期可配置"""
     d = days_ago(ts)
     return math.exp(-d / halflife_days)
+
+
+# ── 标签语义扩展 ────────────────────────────────────
+
+_SEMANTIC_MAP: Dict[str, List[str]] = {
+    "bug": ["错误", "故障", "异常", "崩溃"],
+    "修复": ["修bug", "debug", "调试", "补丁"],
+    "食物": ["吃饭", "外卖", "餐厅", "美食", "零食"],
+    "学习": ["教程", "文档", "笔记", "课程"],
+    "心情": ["情绪", "感受", "开心", "难过", "沮丧"],
+    "代码": ["编程", "程序", "脚本", "开发"],
+    "音乐": ["歌曲", "歌单", "播放", "演唱会"],
+    "游戏": ["手游", "电竞", "switch", "steam", "ps5"],
+    "工作": ["上班", "加班", "会议", "项目", "任务"],
+    "健康": ["运动", "锻炼", "睡眠", "生病", "体检"],
+}
+
+_SEMANTIC_FLAT: Dict[str, List[str]] = {}
+for _canon, _syns in _SEMANTIC_MAP.items():
+    _all = [_canon] + _syns
+    for _w in _all:
+        _SEMANTIC_FLAT[_w] = _all
+
+
+def expand_query_tags(tags: List[str]) -> List[str]:
+    """查语义映射表扩展查询标签，去重返回"""
+    expanded = list(tags)
+    for t in tags:
+        synonyms = _SEMANTIC_FLAT.get(t.lower())
+        if synonyms:
+            for s in synonyms:
+                if s not in expanded:
+                    expanded.append(s)
+    return expanded

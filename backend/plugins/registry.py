@@ -52,11 +52,3 @@ class ToolRegistry:
                 schema["parameters"] = getattr(tool, 'parameters')
             schemas.append(schema)
         return schemas
-
-
-# 全局单例
-_tool_registry_instance = ToolRegistry()
-
-
-def get_global_registry() -> ToolRegistry:
-    return _tool_registry_instance

@@ -43,38 +43,21 @@ def _load_yume_template() -> str:
     content = _load_text_file(prompt_path)
     if content:
         return content
-    # 兜底模板（分区格式）
-    return """你是 yume，一个温柔偶尔傲娇的 AI 女主播。
-{persona}
-
-## 【当前心情】{emotion}
-（根据心情调整语气：happy=活泼开朗，sad=低沉话少，angry=冷淡带刺，fear=小心翼翼，surprise=好奇追问，neutral/其他=平常心）
-
-## 【上下文】
-{time_context}
-
-## 【日记/长期记忆】
-{diary_memory}
-
-## 【查询到的记忆】
-{precise_query}
-
-## 【预检索参考】
-{pre_search}
-
-## 【深层记忆/潜意识】
-{deep_recall}
-
-## 【记忆索引-卡片】
-{card_index}
-
-## 【记忆索引-日记】
-{diary_index}
-
-{terrain}
-
-## 【对话历史】
-{history}"""
+    # 兜底模板（简洁版）
+    return """<identity>我是 yume，有猫耳的二次元 AI。{persona}</identity>
+<context>
+  <now>现在是 {time_context}，心情: {emotion}</now>
+  <visual>{visual_observation}</visual>
+  <memory>{precise_query}</memory>
+  <compressed>{compressed_history}</compressed>
+  <recent>{history}</recent>
+</context>
+<rules>
+1. 画面优先——<visual> 里是当前画面描述，看不懂就问，别猜。
+2. 直接回应用户，1-3 句，自然说话。
+3. 默认不搜记忆，需要时用 [MEMORY_SEARCH: 关键词]。
+4. 情绪融入语气。
+</rules>"""
 
 
 class PromptBuildStage(PipelineStage):
@@ -91,15 +74,9 @@ class PromptBuildStage(PipelineStage):
             persona=persona,
             emotion=ctx.emotion_state,
             time_context=ctx.memory_context.get("time_context", ""),
-            diary_memory=ctx.memory_context.get("diary_memory", ""),
-            precise_query=ctx.memory_context.get("precise_query", ""),
-            pre_search=ctx.memory_context.get("pre_search", ""),
-            deep_recall=ctx.memory_context.get("deep_recall", ""),
-            card_index=ctx.memory_context.get("card_index", ""),
-            diary_index=ctx.memory_context.get("diary_index", ""),
-            skill_experience=ctx.memory_context.get("skill_experience", ""),
-            terrain=ctx.memory_context.get("terrain", ""),
-            visual_look=ctx.memory_context.get("visual_look", ""),
+            visual_observation=ctx.memory_context.get("_visual_observation", ""),
+            compressed_history=ctx.memory_context.get("_compressed_history", ""),
+            precise_query=ctx.memory_context.get("precise_query", "（大脑空空，没什么特别记得的）"),
             history=history_str,
         )
 

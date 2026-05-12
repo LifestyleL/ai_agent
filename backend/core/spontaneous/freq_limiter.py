@@ -16,13 +16,25 @@ class FreqLimiter:
         self.history = deque(maxlen=20)
         self.last_attempt_time = 0
         self.consecutive_rejects = 0
+        self._reject_multiplier = 1.0
 
         self.rules = {
             "min_interval": config.SPONTANEOUS_MIN_INTERVAL,
             "max_per_hour": config.SPONTANEOUS_MAX_PER_HOUR,
             "max_per_day": config.SPONTANEOUS_MAX_PER_DAY,
             "cool_down_after_reject": config.SPONTANEOUS_COOL_DOWN_AFTER_REJECT,
+            "reject_multiplier_max": 3.0,
         }
+
+    def apply_parameters(self, params):
+        """根据用户画像更新运行时限制"""
+        self.rules["min_interval"] = params.min_interval
+        self.rules["max_per_hour"] = params.max_per_hour
+        self.rules["max_per_day"] = params.max_per_day
+        self.rules["reject_multiplier_max"] = params.reject_multiplier_max
+
+    def reset_reject_multiplier(self):
+        self._reject_multiplier = 1.0
 
     def record_spoke(self):
         """记录一次发言"""
@@ -70,6 +82,16 @@ class FreqLimiter:
         now = time.time()
         reasons = []
         stats = {}
+
+        # 0. 绝对禁止（max_per_hour == 0 表示该类型完全不允许主动发言）
+        if self.rules["max_per_hour"] <= 0:
+            reasons.append("该用户类型禁止主动发言 (max_per_hour=0)")
+            return {
+                "allowed": False,
+                "reasons": reasons,
+                "next_allowed_in": 86400,
+                "stats": {"disabled": 1}
+            }
 
         # 1. 检查最小间隔
         if self.history:
@@ -171,7 +193,12 @@ class FreqLimiter:
         if not allowed:
             print(f"[FreqLimiter] 发言被限制: {', '.join(reasons)}")
             print(f"  统计: 时{hourly_count}/日{daily_count}, 连续拒绝{self.consecutive_rejects}次")
-            self.record_reject("频率限制")
+            # 只有"实质限制"(额度/深夜)才算拒绝，纯时序违规不进入级联冷却
+            is_substantial_reject = bool(
+                stats.get("hourly_limit") or stats.get("daily_limit") or stats.get("night_limit")
+            )
+            if is_substantial_reject:
+                self.record_reject("频率限制")
         else:
             print(f"[FreqLimiter] 允许发言 (时{hourly_count}/日{daily_count}, 优先级{priority})")
 

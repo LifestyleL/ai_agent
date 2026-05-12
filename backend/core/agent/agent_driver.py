@@ -15,15 +15,17 @@ import threading
 import asyncio
 from datetime import datetime, timedelta
 from core.llm.llm_api import LLMAPI
+from core.llm.llm_factory import LLMFactory
 import config
 from services.tts.tts_service import TTSService
 from core.agent.agent_voice import Voice
 from core.agent.tts_manager import TTSManager
 from core.agent.frontend_bridge import FrontendBridge
-from core.memory.memory_core import MemoryCore
+from core.memory.memory_facade import MemoryFacade as MemoryCore
 from core.event.event_bus import event_bus, EventType, Event
-from core.behavior.drive_model import get_drive_model
-from core.behavior.persona import get_persona
+from core.state_machine.state_machine import Event as FsmEvent
+from core.behavior.drive_model import DriveModel
+from core.behavior.persona import Persona
 from core.behavior import instinct_handler
 from core.behavior import mumble_handler
 from typing import Dict, Any
@@ -32,23 +34,13 @@ from typing import Dict, Any
 IDLE_TIMEOUT = config.AGENT_IDLE_TIMEOUT
 IDLE_INTERVAL = (config.AGENT_IDLE_INTERVAL_MIN, config.AGENT_IDLE_INTERVAL_MAX)
 
-_global_tts_queue = None
-
 
 class YumeDriver:
 
     def __init__(self):
         # --- LLM 实例（双温度变体） ---
-        self.llm_thinker = LLMAPI(
-            api_key=config.DEEPSEEK_API_KEY,
-            base_url=config.DEEPSEEK_BASE_URL,
-            model=config.DEEPSEEK_MODEL
-        )
-        self.llm_speaker = LLMAPI(
-            api_key=config.DEEPSEEK_API_KEY,
-            base_url=config.DEEPSEEK_BASE_URL,
-            model=config.DEEPSEEK_MODEL
-        )
+        self.llm_thinker = LLMFactory.get_default()
+        self.llm_speaker = LLMFactory.get_default()
 
         # --- 统一记忆系统（V4.0：纯文件存储，无 FAISS） ---
         print("[MemorySystem] V4.0 初始化统一记忆核心...")
@@ -79,8 +71,6 @@ class YumeDriver:
 
         # TTS 管理器
         self.tts_manager = TTSManager(voice=self.voice, event_bus=event_bus)
-        global _global_tts_queue
-        _global_tts_queue = self.tts_manager.tts_queue
 
         # --- 生命周期状态 ---
         self.is_running = False
@@ -90,12 +80,13 @@ class YumeDriver:
         self._query_threads: list = []  # 追踪查询子线程
 
         # --- 驱动模型 & 人设 ---
-        self.drive_model = get_drive_model()
+        self.drive_model = DriveModel()
         print("[DriveModel] 驱动模型已加载")
-        self.persona = get_persona()
+        self.persona = Persona()
         print(f"[Persona] 人设已加载: {self.persona.name}")
 
-        instinct_handler.init_instinct_handler(self.llm_speaker)
+        instinct_handler.init_instinct_handler(self.llm_speaker, self.tts_manager.tts_queue)
+        mumble_handler.init_mumble_handler(self.tts_manager.tts_queue)
 
         # --- 对话目标追踪器（后台 LLM 摘要 + 目标提取） ---
         try:
@@ -115,7 +106,8 @@ class YumeDriver:
             self.spontaneous_engine = SpontaneousEngine(
                 memory_core=self.memory_core,
                 llm=self.llm_speaker,
-                goal_tracker=self.goal_tracker
+                goal_tracker=self.goal_tracker,
+                tts_manager=self.tts_manager,
             )
             self.spontaneous_engine.set_speech_callback(self._on_spontaneous_speech)
             print("[SpontaneousEngine] 自驱动引擎初始化成功")
@@ -234,12 +226,16 @@ class YumeDriver:
     # 用户输入处理
     # ============================================================
 
-    def handle_user_input(self, text: str):
+    def handle_user_input(self, text: str, source: str = "text"):
         user_input_time = time.time() * 1000
-        print(f"[延迟诊断] user_input_received 时间戳: {user_input_time:.2f} ms (文本: '{text[:30]}...')")
+        print(f"[延迟诊断] user_input_received 时间戳: {user_input_time:.2f} ms (文本: '{text[:30]}...', 来源: {source})")
 
         if not text.strip():
             return
+
+        # 语音输入：先打断当前 TTS
+        if source == "voice":
+            self.interrupt_tts()
 
         # 跨天懒检查 + 日记归档
         self.memory_core.check_cross_day_diary()
@@ -251,6 +247,14 @@ class YumeDriver:
 
         if self.spontaneous_engine:
             self.spontaneous_engine.on_user_activity(text)
+            # 记录用户主动发起的消息（供画像推断）
+            if self.spontaneous_engine.engagement_analyzer:
+                self.spontaneous_engine.engagement_analyzer.record_turn(
+                    user_msg=text,
+                    ai_msg=None,
+                    is_ai_spontaneous=False,
+                    timestamp=time.time(),
+                )
 
         self.tts_manager.current_emotion = "neutral"
 
@@ -322,16 +326,50 @@ class YumeDriver:
     # 回调 & 委托方法
     # ============================================================
 
+    def interrupt_tts(self):
+        """打断当前 TTS 播报（语音输入触发）"""
+        self.tts_manager.interrupt()
+        self.frontend.send_interrupt_command()
+
     def _on_spontaneous_speech(self, text: str, context: Dict[str, Any]):
-        """自驱动引擎回调 —— 委托给 TTS 管理器，并发送 Live2D 指令"""
-        self.tts_manager.on_spontaneous_speech(text, context)
-        emotion = context.get("emotion", "neutral")
-        self.frontend.send_live2d_cmd("emotion", emotion=emotion)
-        # 存入短期记忆，避免 AI 说完就"忘记自己说过什么"
-        if self.memory_core:
-            self.memory_core.add_short_term("assistant", text)
-        if self.spontaneous_engine:
-            self.spontaneous_engine.on_ai_spoke(text)
+        """自驱动引擎回调 —— 通过状态机分发（不再直接 TTS）"""
+        if self.state_machine:
+            sm_context = {
+                "is_spontaneous": True,
+                "spontaneous_text": text,
+                "spontaneous_emotion": context.get("emotion", "neutral"),
+                "spontaneous_context": context,
+                "follow_up_type": context.get("follow_up_type"),
+                "lightweight_context": context.get("lightweight_context"),
+                "tts_streamed": context.get("tts_streamed", False),
+            }
+            # 记录交互（供用户画像自动推断）
+            if self.spontaneous_engine and self.spontaneous_engine.engagement_analyzer:
+                is_spontaneous = not context.get("source", "").startswith("user")
+                self.spontaneous_engine.engagement_analyzer.record_turn(
+                    user_msg=None,
+                    ai_msg=text,
+                    is_ai_spontaneous=True,
+                    timestamp=time.time(),
+                )
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    asyncio.ensure_future(
+                        self.state_machine.trigger(FsmEvent.SPONTANEOUS_TRIGGER, sm_context)
+                    )
+                else:
+                    asyncio.run_coroutine_threadsafe(
+                        self.state_machine.trigger(FsmEvent.SPONTANEOUS_TRIGGER, sm_context),
+                        loop,
+                    )
+            except RuntimeError:
+                threading.Thread(
+                    target=lambda: asyncio.run(
+                        self.state_machine.trigger(FsmEvent.SPONTANEOUS_TRIGGER, sm_context)
+                    ),
+                    daemon=True,
+                ).start()
 
     def speak_final_text(self, text: str):
         """状态机播报入口 —— 委托给 TTS 管理器"""
@@ -341,3 +379,8 @@ class YumeDriver:
         """发送缓冲语到前端（防止冷场）"""
         self.tts_manager.enqueue_text(text, "neutral")
         self.frontend.send_text_to_frontend(text, "thinking")
+
+    @property
+    def tts_queue(self):
+        """TTS 队列（供本能/嘟囔 handler 注入使用）"""
+        return self.tts_manager.tts_queue

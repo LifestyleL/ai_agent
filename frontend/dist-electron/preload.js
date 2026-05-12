@@ -1,0 +1,1 @@
+"use strict";const e=require("electron");e.contextBridge.exposeInMainWorld("electronAPI",{setAlwaysOnTop:n=>e.ipcRenderer.send("set-always-on-top",n),openSettings:()=>e.ipcRenderer.send("open-settings"),minimize:()=>e.ipcRenderer.send("window-minimize"),maximize:()=>e.ipcRenderer.send("window-maximize"),close:()=>e.ipcRenderer.send("window-close")});

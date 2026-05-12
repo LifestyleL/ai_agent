@@ -6,8 +6,6 @@ websocket:
   enable_jsonrpc: true
 
 ai:
-  qwen:
-    temperature: 0.9 # 开发时更有创意
   deepseek:
     temperature: 0.5
 

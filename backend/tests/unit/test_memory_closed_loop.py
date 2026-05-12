@@ -23,7 +23,7 @@ os.environ['HF_HUB_OFFLINE'] = '1'
 
 from core.emotion_engine import EmotionEngine
 from core.vector_memory import VectorMemory
-from core.memory_core import MemoryCore
+from core.memory.memory_facade import MemoryFacade as MemoryCore
 
 
 class TestMemoryClosedLoop:

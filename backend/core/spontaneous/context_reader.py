@@ -6,7 +6,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
-from ..memory.memory_core import MemoryCore
+from ..memory.memory_facade import MemoryFacade as MemoryCore
 
 
 class ContextReader:
@@ -114,3 +114,43 @@ class ContextReader:
             "time_context": time_ctx,
             "raw_short_term": short_term[-3:] if short_term else []  # 最后3条
         }
+
+    async def get_lightweight_context(self, short_term_n: int = 3, top_card_n: int = 1) -> dict:
+        """轻量上下文，供追问/唤醒生成使用，不触发完整 BFS 检索"""
+        ctx: Dict[str, Any] = {"recent_turns": [], "top_card": None}
+        try:
+            history = self.memory_core.short_term_history
+            if history:
+                recent = history[-(short_term_n * 2):]
+                ctx["recent_turns"] = [
+                    {"role": d.get("role", ""), "content": d.get("content", "")}
+                    for d in recent
+                ]
+        except Exception:
+            pass
+        try:
+            if hasattr(self.memory_core, "_card_store"):
+                cards = self.memory_core._card_store.get_recent_cards(top_card_n)
+                if cards:
+                    ctx["top_card"] = {"topic": cards[0].topic, "content": cards[0].content[:120]}
+        except Exception:
+            pass
+        return ctx
+
+    def search_relevant_memories(self, keywords: list, limit: int = 5) -> list:
+        """BFS检索与关键词相关的记忆卡片"""
+        if not keywords or not hasattr(self.memory_core, '_card_store'):
+            return []
+        try:
+            cards = self.memory_core._card_store.retrieve(
+                query_tags=keywords, limit=limit,
+                max_depth=3, recency_halflife=7
+            )
+            return [
+                {"topic": c.topic, "content": c.content[:150],
+                 "timestamp": c.timestamp, "emotion": c.emotion}
+                for c in cards
+            ]
+        except Exception as e:
+            print(f"[ContextReader] 记忆搜索失败: {e}")
+            return []

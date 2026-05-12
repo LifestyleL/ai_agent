@@ -66,6 +66,10 @@ class EventType(Enum):
     DISCOVERY_MADE = "discovery_made"                    # 发现新知识
     SURFING_REVIEW_NEEDED = "surfing_review_needed"      # 冲浪回顾需求
 
+    # TTS 打断 & ASR 事件
+    TTS_INTERRUPTED = "tts_interrupted"                  # TTS 播报被打断
+    ASR_RESULT = "asr_result"                            # ASR 识别到最终结果
+
 
 # ==================== 事件数据结构 ====================
 

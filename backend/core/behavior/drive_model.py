@@ -117,12 +117,4 @@ class DriveModel:
         }
 
 
-# 全局单例
-_drive_model = None
-
-def get_drive_model() -> DriveModel:
-    """获取驱动模型单例"""
-    global _drive_model
-    if _drive_model is None:
-        _drive_model = DriveModel()
-    return _drive_model
+# get_drive_model() 已移除 — 请通过 DI 容器获取 DriveModel 实例

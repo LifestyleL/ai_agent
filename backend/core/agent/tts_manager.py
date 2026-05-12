@@ -24,6 +24,7 @@ class TTSManager:
         self._tts_queue = queue.Queue(maxsize=max_queue_size)
         self._current_emotion = "neutral"
         self._tts_buffer = ""
+        self._abort_flag = threading.Event()
 
         self._tts_worker_thread = threading.Thread(target=self._tts_worker_loop, daemon=True)
         self._tts_worker_thread.start()
@@ -40,6 +41,39 @@ class TTSManager:
     @property
     def tts_queue(self):
         return self._tts_queue
+
+    def interrupt(self):
+        """打断当前 TTS：清空队列 + 解除 worker 阻塞 + 通知 Voice 中止合成"""
+        print("[TTSManager] 打断 TTS 播报...")
+
+        # 1. 清空队列
+        drained = 0
+        while not self._tts_queue.empty():
+            try:
+                self._tts_queue.get_nowait()
+                self._tts_queue.task_done()
+                drained += 1
+            except queue.Empty:
+                break
+        if drained:
+            print(f"[TTSManager] 已清空 {drained} 条待播消息")
+
+        # 2. 设置中止标志
+        self._abort_flag.set()
+
+        # 3. 解除 worker 的 wait 阻塞
+        self.voice._tts_done_event.set()
+
+        # 4. 调用 Voice 级别打断
+        self.voice.interrupt()
+
+        # 5. 发送事件
+        self._event_bus.publish(
+            EventType.TTS_INTERRUPTED,
+            source="TTSManager.interrupt",
+            timestamp=time.time()
+        )
+        print("[TTSManager] TTS 已打断")
 
     def _get_buffer_sentence(self) -> str:
         return random.choice(self._BUFFER_SENTENCES)
@@ -166,6 +200,10 @@ class TTSManager:
     def _tts_worker_loop(self):
         """后台线程：从队列取句子，同步调用 TTS，确保一句播完才播下一句"""
         while True:
+            # 检查中止标志
+            if self._abort_flag.is_set():
+                self._abort_flag.clear()
+
             item = self._tts_queue.get()
 
             if item is None:
@@ -196,6 +234,8 @@ class TTSManager:
 
                 if not self.voice._tts_done_event.wait(timeout=60):
                     print(f"[ERROR] [TTS_Queue] 句子合成超时(60s): '{text[:30]}...' (情感: {emotion})")
+                elif self._abort_flag.is_set():
+                    print(f"[TTS_Queue] 句子合成被打断: '{text[:30]}...'")
                 else:
                     print(f"[OK] [TTS_Queue] 句子合成完成: '{text[:30]}...' (情感: {emotion})")
 

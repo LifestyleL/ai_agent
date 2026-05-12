@@ -20,10 +20,20 @@ class GoalTracker:
         self._last_update_turn = 0
         self._min_turn_interval = config.SPONTANEOUS_GOAL_UPDATE_MIN_TURNS
         self._update_lock = threading.Lock()
+        self._last_visual: str = ""  # 最近的视觉观察，用于目标生成
 
         goals_dir = Path(__file__).parent.parent.parent / "agent_memory" / "spontaneous"
         goals_dir.mkdir(parents=True, exist_ok=True)
         self._goals_file = goals_dir / "goals.json"
+
+        # 每次启动重置目标，防止上次会话残留污染
+        self._write_goals({
+            "updated_at": datetime.now().isoformat(),
+            "conversation_summary": "",
+            "user_mood_guess": "",
+            "active_goals": []
+        })
+        print("[GoalTracker] 已重置目标文件")
 
     # ─── 公共 API ───
 
@@ -54,15 +64,46 @@ class GoalTracker:
             "active_goals": []
         }
 
+    def set_visual(self, description: str):
+        """注入当前视觉观察，让目标生成跟随画面内容"""
+        if description:
+            self._last_visual = description
+
     def get_best_goal(self) -> Optional[str]:
-        """返回优先级最高的目标描述，没有则返回 None"""
+        """返回优先级最高的未说出目标描述，没有则返回 None"""
         data = self.get_goals()
         goals = data.get("active_goals", [])
         if not goals:
             return None
+        # 过滤已说过的目标
+        available = [g for g in goals if not g.get("spoken", False)]
+        if not available:
+            return None
         # 按优先级降序
-        best = max(goals, key=lambda g: g.get("priority", 0))
+        best = max(available, key=lambda g: g.get("priority", 0))
         return best.get("goal", None) if best.get("priority", 0) > 0 else None
+
+    def mark_goal_spoken(self, goal_text: str) -> None:
+        """标记一个目标已经被说过了"""
+        data = self.get_goals()
+        goals = data.get("active_goals", [])
+        changed = False
+        for g in goals:
+            if g.get("goal") == goal_text:
+                g["spoken"] = True
+                changed = True
+        if changed:
+            self._write_goals(data)
+
+    def clear_stale_goals(self) -> None:
+        """清理已说过的目标，为视觉观察腾出空间"""
+        data = self.get_goals()
+        goals = data.get("active_goals", [])
+        unspoken = [g for g in goals if not g.get("spoken", False)]
+        if len(unspoken) != len(goals):
+            data["active_goals"] = unspoken
+            self._write_goals(data)
+            print(f"[GoalTracker] 清理 {len(goals) - len(unspoken)} 个已说目标，剩余 {len(unspoken)}")
 
     # ─── 内部 ───
 
@@ -103,9 +144,14 @@ class GoalTracker:
             goals_text = "\n".join(f"- {g['goal']} (优先级{g['priority']})" for g in prev_goals)
             prev_goals_hint = f"\n\n【你之前已有的目标（不要重复，除非需要深化）】\n{goals_text}"
 
+        # 注入视觉观察，让目标跟随画面
+        visual_hint = ""
+        if self._last_visual:
+            visual_hint = f"\n\n【刚才看到的画面】{self._last_visual}\n（如果画面显示用户在玩游戏/看视频/写代码等活动，你的目标应该围绕这个活动来想，不要死抓之前的话题）"
+
         return f"""以下是最近的对话记录：
 
-{context}{prev_goals_hint}
+{context}{visual_hint}{prev_goals_hint}
 
 请以第一人称写出你（梦/yume）的内心独白：
 
@@ -121,7 +167,8 @@ class GoalTracker:
 - 如果对话太短或没有明显话题，goals 可以为空数组 []
 - **重要：不要重复已有的目标。每次更新应该提出新的方向，或深化/细化之前的目标**
 - **如果用户刚刚转移了话题，跟随用户的新方向，不要纠结之前的话题**
-- **你已经说过的话、做过的表达，就不要再当作目标了**"""
+- **你已经说过的话、做过的表达，就不要再当作目标了**
+- **如果画面里用户在玩游戏/看视频等，优先对画面内容产生目标，而不是旧话题**"""
 
     def _parse_response(self, text: str) -> Optional[dict]:
         """解析 LLM 返回的 JSON，硬过滤重复目标"""
@@ -149,20 +196,22 @@ class GoalTracker:
                         continue
                     valid_goals.append({
                         "goal": goal_text,
-                        "priority": max(1, min(5, int(g["priority"])))
+                        "priority": max(1, min(5, int(g["priority"]))),
+                        "spoken": False,
+                        "created_at": datetime.now().isoformat()
                     })
             return {
                 "updated_at": datetime.now().isoformat(),
                 "conversation_summary": summary.strip(),
                 "user_mood_guess": data.get("user_mood_guess", "").strip(),
-                "active_goals": valid_goals[:3]
+                "active_goals": valid_goals[:2]  # 最多保留2个，旧目标更快被替换
             }
         except (json.JSONDecodeError, AttributeError):
             print(f"[GoalTracker] JSON 解析失败: {text[:100]}...")
             return None
 
     def _is_duplicate_goal(self, goal: str) -> bool:
-        """检测目标是否与已记录目标高度相似"""
+        """检测目标是否与已记录目标高度相似（LCS + 关键词重叠）"""
         existing = self.get_goals().get("active_goals", [])
         for g in existing:
             old = g.get("goal", "")
@@ -172,6 +221,17 @@ class GoalTracker:
             common = self._longest_common_substring(goal, old)
             if len(common) >= min(len(goal), len(old)) * 0.5:
                 return True
+            # 关键词重叠 >= 60% → 视为重复
+            try:
+                from utils.text_utils import extract_keywords
+                goal_kw = set(extract_keywords(goal, max_kw=5))
+                old_kw = set(extract_keywords(old, max_kw=5))
+                if goal_kw and old_kw:
+                    overlap = len(goal_kw & old_kw) / max(len(goal_kw), len(old_kw))
+                    if overlap >= 0.6:
+                        return True
+            except Exception:
+                pass
         return False
 
     @staticmethod
@@ -198,15 +258,15 @@ class GoalTracker:
         return a[end_pos - max_len:end_pos]
 
     def _compact_assistant(self, context: str) -> str:
-        """压缩助手发言：每轮只保留第一句，截掉重复"""
+        """压缩 yume 发言：每轮只保留第一句，截掉重复"""
         import re
         lines = context.split("\n")
         compacted = []
         seen = set()
         for line in lines:
-            if line.startswith("助手:"):
+            if line.startswith("yume:"):
                 # 只取第一句（到句号/问号/感叹号）
-                m = re.match(r'^(助手:.*?[。！？])', line)
+                m = re.match(r'^(yume:.*?[。！？])', line)
                 if m:
                     short = m.group(1)
                 else:

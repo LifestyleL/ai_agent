@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 
 class VisualObserver:
-    """混合节奏调度：活跃期低频，沉默期加速，变化检测过滤"""
+    """自适应节奏调度：5s 起步，连续 3 帧不变 +5s 退避，变化则重置"""
 
     def __init__(self, engine: "SpontaneousEngine", ws_server=None):
         self._engine = engine
@@ -26,9 +26,14 @@ class VisualObserver:
             threshold=getattr(config, 'VISION_FRAME_DIFF_THRESHOLD', 0.08)
         )
 
-        # 节奏参数
-        self._base_interval = getattr(config, 'VISION_BASE_INTERVAL', 180)
-        self._silence_boost_interval = getattr(config, 'VISION_SILENCE_BOOST_INTERVAL', 60)
+        # 自适应截图频率：5s 起步，连续 3 帧不变则 +5s，变化则重置
+        self._base_interval = 5                      # 起始间隔
+        self._current_interval = self._base_interval  # 当前间隔（动态调整）
+        self._interval_step = 5                       # 每次增加的秒数
+        self._max_interval = 300                      # 最大间隔上限（5分钟）
+        self._unchanged_streak = 0                    # 连续不变帧计数
+        self._streak_threshold = 3                    # 触发退避的阈值
+
         self._last_capture_time: float = 0
         self._cooldown_until: float = 0    # VLM 调用后冷却
         self._cooldown_seconds = getattr(config, 'VISION_COOLDOWN_SECONDS', 30)
@@ -69,9 +74,8 @@ class VisualObserver:
                 self._pending = False
             return
 
-        # 计算间隔
-        interval = (self._silence_boost_interval if silence_duration >= 60
-                    else self._base_interval)
+        # 计算间隔：自适应退避
+        interval = self._current_interval
 
         if now - self._last_capture_time < interval:
             return
@@ -86,7 +90,7 @@ class VisualObserver:
             self._pending = False
 
     async def request_look(self) -> str:
-        """用户主动要求看屏幕：同步等待截图 → VLM 分析 → 返回描述"""
+        """用户主动要求看屏幕：同步等待截图 → 返回 raw base64（主 LLM 是 VLM，直接看图）"""
         if not self._ws or not hasattr(self._ws, 'send_screenshot_request'):
             print("[VisualObserver] request_look: WebSocket 不可用")
             return ""
@@ -109,16 +113,8 @@ class VisualObserver:
         if not base64_image:
             return ""
 
-        # VLM 描述（线程池中运行）
-        try:
-            description = await asyncio.to_thread(self._describe_sync, base64_image)
-            if description:
-                self._last_description = description
-            print(f"[VisualObserver] request_look 描述: {description}")
-            return description
-        except Exception as e:
-            print(f"[VisualObserver] request_look VLM 失败: {e}")
-            return ""
+        print(f"[VisualObserver] request_look 返回 raw 截图 ({len(base64_image)} chars)")
+        return base64_image
 
     def _describe_sync(self, base64_image: str) -> str:
         """同步 VLM 调用（在线程池中运行）"""
@@ -152,11 +148,24 @@ class VisualObserver:
             self._pending = False
 
             # 变化检测
-            if not self._differ.is_changed(base64_image):
+            changed = self._differ.is_changed(base64_image)
+            if changed:
+                # 画面有变化 → 重置频率
+                self._current_interval = self._base_interval
+                self._unchanged_streak = 0
+                print(f"[VisualObserver] 画面有变化，重置间隔={self._base_interval}s，调用 VLM 描述...")
+            else:
+                # 无变化 → 累积 streak，超过阈值则退避
+                self._unchanged_streak += 1
+                if self._unchanged_streak >= self._streak_threshold:
+                    self._current_interval = min(
+                        self._current_interval + self._interval_step,
+                        self._max_interval
+                    )
+                    self._unchanged_streak = 0
+                    print(f"[VisualObserver] {self._streak_threshold}帧不变，退避至间隔={self._current_interval}s")
                 print("[VisualObserver] 画面无变化，跳过")
                 return
-
-            print("[VisualObserver] 画面有变化，调用 VLM 描述...")
 
             # 启动冷却
             self._cooldown_until = time.time() + self._cooldown_seconds

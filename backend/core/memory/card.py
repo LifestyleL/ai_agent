@@ -24,6 +24,12 @@ class Card:
     emotion: str = "neutral"
     tier: int = 0          # 0=raw, 1=compressed, 2=essence, -1=deleted
     links: Dict[str, float] = field(default_factory=dict)  # {target_card_id: weight}
+    status: str = "approved"        # "pending" | "approved" | "archived"
+    reviewed_by: str = "auto"       # "auto" | "user"
+    created_at: str = ""            # 卡片创建时间 (ISO)
+    updated_at: str = ""            # 最后修改时间 (ISO)
+    last_reviewed_at: str = ""      # 最后审核时间 (ISO)
+    review_count: int = 0           # 审核次数
 
 
 def generate_card_id() -> str:
@@ -60,6 +66,15 @@ def score_importance(
     return round(min(1.0, score), 2)
 
 
+@dataclass
+class TagCluster:
+    """标签共现聚类"""
+    tags: List[str]              # 聚类包含的标签
+    card_count: int              # 相关卡片数
+    representative_card_id: str  # 代表卡片ID
+    label: str                   # 聚类名（最高频标签）
+
+
 def card_to_dict(card: Card) -> dict:
     return asdict(card)
 
@@ -77,4 +92,10 @@ def dict_to_card(d: dict) -> Card:
         emotion=d.get("emotion", "neutral"),
         tier=d.get("tier", 0),
         links=d.get("links", {}),
+        status=d.get("status", "approved"),
+        reviewed_by=d.get("reviewed_by", "auto"),
+        created_at=d.get("created_at", ""),
+        updated_at=d.get("updated_at", ""),
+        last_reviewed_at=d.get("last_reviewed_at", ""),
+        review_count=d.get("review_count", 0),
     )

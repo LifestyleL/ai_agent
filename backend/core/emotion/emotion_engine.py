@@ -4,9 +4,14 @@
 参数从 config 全局配置读取
 """
 import config
+from backend.core.capability import EmotionCapability
 
 
-class EmotionEngine:
+class EmotionEngine(EmotionCapability):
+
+    name = "emotion"
+    version = "2.0"
+
     def __init__(self, initial_type: int = None, initial_strength: float = None):
         if initial_type is None:
             initial_type = 0
@@ -111,3 +116,18 @@ class EmotionEngine:
         """重置情绪状态"""
         self.type = max(0, min(3, new_type))
         self.strength = max(0.0, min(10.0, new_strength))
+
+    # ── Capability 协议 ──
+
+    async def initialize(self, deps) -> None:
+        pass  # 无外部依赖，无需初始化
+
+    async def shutdown(self) -> None:
+        pass  # 无资源需释放
+
+    def get_status(self) -> dict:
+        return {"type": self.type, "strength": round(self.strength, 2)}
+
+    def get_emotion_label(self) -> str:
+        """返回当前情绪标签 (neutral/happy/sad/angry)"""
+        return self.type_to_label(self.type)

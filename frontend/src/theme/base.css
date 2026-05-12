@@ -1,0 +1,43 @@
+@import './tokens.css';
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  overscroll-behavior-x: none;
+  touch-action: none;
+}
+
+html,
+body {
+  overflow: hidden;
+  margin: 0;
+  padding: 0;
+  background: var(--bg-transparent);
+  font-family: var(--font-family);
+  color: var(--text-primary);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body {
+  display: flex;
+  flex-wrap: wrap;
+}
+
+body > canvas:only-child {
+  width: 100vw;
+  height: 100vh;
+}
+
+/* ---- Utility: drag region ---- */
+.-app-region-drag {
+  -webkit-app-region: drag;
+}
+
+.-app-region-no-drag {
+  -webkit-app-region: no-drag;
+}

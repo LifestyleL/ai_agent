@@ -1,0 +1,49 @@
+# 四种用户类型的最终运行参数（绝对值）
+# 未列出的字段继承 EngagementParameters 类默认值
+profiles:
+  normal: {}
+
+  social:
+    check_interval: 40
+    max_per_hour: 5
+    max_per_day: 15
+    min_interval: 180
+    follow_up_gentle_delay: 200
+    follow_up_max_count: 2
+    wake_up_delay: 600
+    wake_up_max_count: 2
+    silent_cooling_after_no_reply: 3
+    reject_multiplier_max: 2.0
+    silent_cooling_daily_greeting: true
+
+  busy:
+    check_interval: 120
+    max_per_hour: 1
+    max_per_day: 4
+    min_interval: 900
+    follow_up_gentle_delay: 900
+    follow_up_max_count: 1
+    wake_up_delay: 3600
+    wake_up_max_count: 0
+    silent_cooling_after_no_reply: 1
+    reject_multiplier_max: 5.0
+    silent_cooling_daily_greeting: true
+
+  quiet:
+    check_interval: 180
+    max_per_hour: 0
+    max_per_day: 1
+    min_interval: 3600
+    allow_follow_up: false
+    allow_consecutive: false
+    silent_cooling_after_no_reply: 1
+    reject_multiplier_max: 10.0
+    silent_cooling_daily_greeting: false
+
+# 自动识别参数
+auto_inference:
+  enable: true
+  update_interval_hours: 6
+  smoothing_samples: 3
+  window_days: 7
+  max_rounds: 50

@@ -56,6 +56,13 @@ memory:
   short_term_capacity_max: 30 # 动态调整最大容量
   enable_vector_memory: false # 是否启用向量记忆模块（暂不启用）
   short_term_history_tokens: 1500 # 短期历史记录最大token预算
+  # 上下文压缩
+  compression:
+    enabled: true
+    trigger_fill_ratio: 0.8       # 缓冲填充率达到80%触发压缩
+    max_recent_keep: 8            # 压缩时保留最近N条未压缩
+    summary_max_chars: 500        # 压缩摘要最大字符数
+    min_entries_to_compress: 10   # 至少N条才触发压缩
   # V5.0 卡片记忆配置
   card:
     enabled: true
@@ -82,15 +89,15 @@ agent:
 # 自驱动引擎配置
 spontaneous:
   enabled: true
-  check_interval: 60            # 检查间隔（秒）
-  min_silence: 600              # 最小沉默时长（秒），默认10分钟
-  min_interval: 300             # 两次发言最小间隔（秒），5分钟
-  max_per_hour: 3               # 每小时最大发言次数
-  max_per_day: 10               # 每天最大发言次数
-  cool_down_after_reject: 120   # 被拒绝后冷却（秒）
-  consecutive_max: 4            # 最大连续发言次数
-  consecutive_stop_prob: 0.3    # 连续发言停止概率基数
-  use_llm_threshold: 3          # 使用LLM生成的最低优先级
+  check_interval: 10            # 检查间隔（秒）
+  min_silence: 120              # 最小沉默时长（秒），2分钟
+  min_interval: 30              # 两次发言最小间隔（秒）
+  max_per_hour: 15              # 每小时最大发言次数
+  max_per_day: 40               # 每天最大发言次数
+  cool_down_after_reject: 30    # 被拒绝后冷却（秒）
+  consecutive_max: 6            # 最大连续发言次数
+  consecutive_stop_prob: 0.15   # 连续发言停止概率基数
+  use_llm_threshold: 2          # 使用LLM生成的最低优先级
   night_start: 2                # 深夜开始时间（24h）
   night_end: 5                  # 深夜结束时间（24h）
   goal_update_min_turns: 2      # 至少隔N轮对话才更新目标

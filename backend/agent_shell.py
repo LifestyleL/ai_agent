@@ -11,15 +11,13 @@ import sys
 import time
 from typing import Optional
 
-from core.state_machine.state_machine import get_state_machine, State, Event
+from core.state_machine.state_machine import StateMachine, State, Event
 from core.state_machine.transitions import setup_base_transitions
 from core.state_machine.actions import create_real_think_action, create_real_do_tool_action
-from core.plugin_base import get_plugin_manager
-from core.memory.memory_core import MemoryCore
+from core.memory.memory_facade import MemoryFacade as MemoryCore
 from core.agent.agent_driver import YumeDriver
-from backend.plugins.registry import get_global_registry
+from backend.plugins.registry import ToolRegistry
 from backend.plugins.builtin.adapters import SearchMemoryAdapter, WriteFileAdapter
-from backend.plugins.builtin.skills.memory_summary_skill import MemorySummarySkill
 
 
 class AgentShell:
@@ -41,8 +39,7 @@ class AgentShell:
         self.config = self._load_config()
 
         # 初始化核心组件
-        self.state_machine = get_state_machine()
-        self.plugin_manager = get_plugin_manager()
+        self.state_machine = StateMachine()
         self.memory_core = MemoryCore()
         self.agent_driver: Optional[YumeDriver] = None
 
@@ -85,41 +82,35 @@ class AgentShell:
         """初始化所有子系统"""
         print("\n[初始化] 启动子系统初始化...")
 
-        # 1. 初始化插件管理器
-        print("[初始化] 1. 初始化插件管理器...")
-        plugin_config = self.config.get("plugins", {})
-        if not self.plugin_manager.initialize_all(plugin_config):
-            print("[WARN] 插件管理器初始化有警告，但继续启动...")
+        # 1. 初始化记忆系统（已通过MemoryCore构造函数初始化）
+        print("[初始化] 1. 记忆系统就绪")
 
-        # 2. 初始化记忆系统（已通过MemoryCore构造函数初始化）
-        print("[初始化] 2. 记忆系统就绪")
+        # 2. 初始化状态机
+        print("[初始化] 2. 状态机就绪")
 
-        # 3. 初始化状态机
-        print("[初始化] 3. 状态机就绪")
-
-        # 4. 初始化Agent驱动
-        print("[初始化] 4. 初始化Agent驱动...")
+        # 3. 初始化Agent驱动
+        print("[初始化] 3. 初始化Agent驱动...")
         try:
             self.agent_driver = YumeDriver()
             print("[初始化] Agent驱动初始化成功")
 
-            # 5. 配置状态机转移规则和Action（微观骨架模式）
-            print("[初始化] 5. 配置状态机转移规则和Action（微观骨架模式）...")
+            # 4. 配置状态机转移规则和Action
+            print("[初始化] 4. 配置状态机转移规则和Action...")
             sm = self.state_machine
             # 设置基础转移规则
             setup_base_transitions(sm)
 
-            # 5.1 工具系统插件化注册（提前，供微观 Action 使用）
-            print("[初始化] 5.1 工具系统插件化注册...")
-            reg = get_global_registry()
+            # 4.1 工具系统插件化注册
+            print("[初始化] 4.1 工具系统插件化注册...")
+            reg = ToolRegistry()
             reg.register(SearchMemoryAdapter())
             reg.register(WriteFileAdapter())
             # 将注册中心实例挂载到 driver 上（备用，暂不强制 driver 使用）
             self.agent_driver.tool_registry = reg
             print(f"[初始化] 工具注册完成，已注册 {len(reg.get_all_tools())} 个工具")
 
-            # 5.2 绑定真实 Action 引擎
-            print("[初始化] 5.2 绑定真实 Action 引擎...")
+            # 4.2 绑定真实 Action 引擎
+            print("[初始化] 4.2 绑定真实 Action 引擎...")
             # 暂时注释掉旧的宏观绑定
             # think_action = create_think_action(driver_instance=self.agent_driver, state_machine=sm)
             # sm.register_action(State.THINK, think_action)
@@ -141,30 +132,6 @@ class AgentShell:
         print("[初始化] 所有子系统初始化完成")
         return True
 
-    async def _test_skill_execution(self):
-        """启动时模拟执行一次 Skill，验证工具编排链路"""
-        print("[Test] 开始模拟执行 MemorySummarySkill...")
-
-        # 1. 从注册中心拿出刚才注册的两个适配器实例
-        reg = get_global_registry()
-        search_adapter = reg.get_tool("search_memory")
-        write_adapter = reg.get_tool("write_file")
-
-        if not search_adapter or not write_adapter:
-            print("[Test] 缺少工具适配器，跳过 Skill 测试")
-            return
-
-        # 2. 实例化 Skill 并注入依赖
-        skill = MemorySummarySkill(tools=[search_adapter, write_adapter])
-
-        # 3. 模拟执行
-        result = await skill.run(context={
-            "query": "测试查询",
-            "archive_path": "agent_memory/test_skill_output.txt"
-        })
-
-        print(f"[Test] Skill 模拟执行结果: {result}")
-
     def start(self) -> bool:
         """启动Agent"""
         if self.agent_driver is None:
@@ -176,23 +143,6 @@ class AgentShell:
             self.agent_driver.start()
             self.is_running = True
             print("[启动] Agent已启动，等待用户输入...")
-
-            # 在后台线程中执行 Skill 测试（不阻塞主流程）
-            def run_skill_test():
-                try:
-                    # 创建新的事件循环用于测试
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    loop.run_until_complete(self._test_skill_execution())
-                    loop.close()
-                except Exception as e:
-                    print(f"[Test] Skill 测试执行出错: {e}")
-
-            import threading
-            test_thread = threading.Thread(target=run_skill_test, daemon=True)
-            test_thread.start()
-            print("[Test] 已启动后台线程执行 Skill 连通性测试")
-
             return True
         except Exception as e:
             print(f"[ERROR] 启动Agent失败: {e}")
@@ -214,14 +164,7 @@ class AgentShell:
             except Exception as e:
                 print(f"[WARN] 停止Agent驱动时出错: {e}")
 
-        # 2. 关闭插件管理器
-        try:
-            self.plugin_manager.shutdown_all()
-            print("[关闭] 插件管理器已关闭")
-        except Exception as e:
-            print(f"[WARN] 关闭插件管理器时出错: {e}")
-
-        # 3. 保存状态（可选）
+        # 2. 保存状态（可选）
         print("[关闭] Agent已完全停止")
 
     def run(self) -> None:
@@ -253,7 +196,6 @@ class AgentShell:
         return {
             "running": self.is_running,
             "state_machine": self.state_machine.get_state_summary(),
-            "plugins": self.plugin_manager.get_all_status(),
             "memory": {
                 "short_term_count": self.memory_core.get_short_term_count(),
                 "emotion": self.memory_core.get_current_emotion(),

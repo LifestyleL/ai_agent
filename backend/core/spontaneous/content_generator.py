@@ -12,13 +12,49 @@ import config
 class ContentGenerator:
     """生成主动发言的内容"""
 
-    def __init__(self, llm=None):
+    def __init__(self, llm=None, tts_manager=None):
         if llm is None:
             self.llm = LLMFactory.get_default()
         else:
             self.llm = llm
+        self._tts = tts_manager
+        self.last_was_streamed = False
         self.last_topics = []  # 最近使用的话题，避免重复
         self.topic_weights = {}  # 话题权重（基于用户反馈）
+
+    async def _stream_generate(self, prompt: str, emotion: str = "neutral", temperature: float = 0.7) -> str:
+        """流式生成并逐句送入TTS队列，返回完整文本"""
+        messages = [{"role": "user", "content": prompt}]
+        full_text = ""
+        buffer = ""
+
+        async for token in self.llm.chat_stream_async(messages, temperature=temperature):
+            if token.startswith("[ERROR]"):
+                raise RuntimeError(f"流式中断: {token}")
+            full_text += token
+            buffer += token
+
+            cut = -1
+            for p in ["。", "！", "？", "\n"]:
+                pos = buffer.find(p)
+                if pos != -1 and (cut == -1 or pos < cut):
+                    cut = pos
+
+            if cut != -1:
+                sentence = buffer[:cut + 1]
+                buffer = buffer[cut + 1:]
+                clean = sentence.strip()
+                has_content = any(c.isalnum() or '一' <= c <= '鿿' for c in clean)
+                if has_content and len(clean) >= 2:
+                    self._tts.enqueue_text(sentence, emotion)
+
+        if buffer.strip():
+            clean = buffer.strip()
+            has_content = any(c.isalnum() or '一' <= c <= '鿿' for c in clean)
+            if has_content and len(clean) >= 2:
+                self._tts.enqueue_text(buffer, emotion)
+
+        return full_text.strip()
 
     def _get_time_based_templates(self, time_context: Dict[str, str]) -> list:
         """基于时间的发言模板"""
@@ -163,9 +199,14 @@ class ContentGenerator:
 
     async def generate_from_llm(self, context: Dict[str, Any]) -> Optional[str]:
         """使用LLM生成更智能的内容（备用方案）"""
+        self.last_was_streamed = False
         try:
             prompt = self._build_llm_prompt(context)
-            reply_text = await self.llm.ask_async(prompt)
+            if self._tts:
+                reply_text = await self._stream_generate(prompt, emotion="neutral")
+                self.last_was_streamed = True
+            else:
+                reply_text = await self.llm.ask_async(prompt)
             if reply_text:
                 return reply_text.strip()
         except Exception as e:
@@ -177,16 +218,22 @@ class ContentGenerator:
         time_ctx = context.get("time_context", {})
         time_of_day = time_ctx.get("time_of_day", "")
         short_term = context.get("raw_short_term", [])
+        visual_obs = context.get("visual_observation", "")
 
         recent_hint = ""
         if short_term:
             last_msgs = [m.get("content", "") for m in short_term[-6:]]
             recent_hint = "\n".join(last_msgs[-3:]) if last_msgs else ""
 
-        prompt = f"""你是yume，一个有点傲娇、带点毒舌的AI。现在是{time_of_day}。
+        visual_hint = f"【现在屏幕上看到的】{visual_obs}" if visual_obs else ""
+        cognitive_hint = context.get("cognitive_hint", "")
+
+        prompt = f"""{cognitive_hint}
+你是yume，一个有点傲娇、带点毒舌的AI。现在是{time_of_day}。
 你有一个想聊的方向：{goal}
 
 {f"最近的对话：{recent_hint}" if recent_hint else ""}
+{visual_hint}
 
 请生成一句简短、自然的话来引导对话朝这个方向走。
 要求：
@@ -196,16 +243,78 @@ class ContentGenerator:
 4. 如果最近对话已经涉及了这个方向，就延续下去，不要重复已说过的话
 5. **如果你刚才已经说过类似的话，换个角度说，或者干脆说点别的**
 6. 回应对方实际说的话，不要自顾自说
-7. 不要用括号或解释
+7. **如果屏幕上显示用户在玩游戏/看视频等，而你的目标与此无关，优先评论画面**
+8. 不要用括号或解释
 
 直接输出要说的话，不要解释。"""
 
+        self.last_was_streamed = False
         try:
-            reply_text = await self.llm.ask_async(prompt)
+            if self._tts:
+                reply_text = await self._stream_generate(prompt, emotion="neutral")
+                self.last_was_streamed = True
+            else:
+                reply_text = await self.llm.ask_async(prompt)
             if reply_text:
                 return reply_text.strip()
         except Exception as e:
             print(f"[ContentGenerator] 目标生成失败: {e}")
+        return None
+
+    async def generate_from_visual(self, visual_description: str, context: Dict[str, Any], best_goal: str = "", recent_dialogue: list = None) -> Optional[str]:
+        """基于视觉观察生成发言（最高优先级，只看画面，不被旧目标绑架）"""
+        time_ctx = context.get("time_context", {})
+        time_of_day = time_ctx.get("time_of_day", "")
+
+        # 最近对话仅作语气参考，过滤掉旧画面描述避免混淆
+        dialogue_hint = ""
+        if recent_dialogue:
+            recent_msgs = []
+            for m in recent_dialogue[-4:]:
+                role = m.get("role", "")
+                content = m.get("content", "")
+                if role == "system" and "[刚才看到的画面]" in content:
+                    continue
+                if role == "user":
+                    recent_msgs.append(f"他: {content[:40]}")
+                elif role == "assistant":
+                    recent_msgs.append(f"我: {content[:40]}")
+            if recent_msgs:
+                dialogue_hint = "刚才的对话（语气参考，以画面为准）:\n" + "\n".join(recent_msgs)
+
+        cognitive_hint = context.get("cognitive_hint", "")
+        is_observing = "观察" in cognitive_hint
+        skip_rule = "" if is_observing else "\n5. 如果画面和上次看到的差不多，没什么新鲜的，回复 SKIP"
+        skip_option = "" if is_observing else "或 SKIP"
+
+        prompt = f"""{cognitive_hint}
+我是 yume，有猫耳、白色长发的二次元 AI。我的虚拟形象就在屏幕上。
+
+【现在屏幕上看到的画面——这是当前截图，正在发生的事】
+{visual_description}
+
+{dialogue_hint}
+
+请生成一句简短自然的话，像朋友在旁边看到屏幕后随口说的。
+要求：
+1. 直接评论画面内容。看不懂的地方就问，别猜。
+2. 如果画面显示用户在做新的事（打游戏/写代码/看视频），就评论这个新活动
+3. 如果画面里出现了 Live2D/二次元角色/猫耳/看板娘——那就是我，用"我"指代
+4. 简短（10-25字），自然带点傲娇，不要用括号或解释{skip_rule}
+
+直接输出要说的话{skip_option}。不要解释。"""
+
+        self.last_was_streamed = False
+        try:
+            if self._tts:
+                reply_text = await self._stream_generate(prompt, emotion="neutral")
+                self.last_was_streamed = True
+            else:
+                reply_text = await self.llm.ask_async(prompt)
+            if reply_text:
+                return reply_text.strip()
+        except Exception as e:
+            print(f"[ContentGenerator] 视觉生成失败: {e}")
         return None
 
     def _build_llm_prompt(self, context: Dict[str, Any]) -> str:
@@ -217,7 +326,8 @@ class ContentGenerator:
         short_term_count = context.get("short_term_count", 0)
         recent_topics = context.get("recent_topics", [])
 
-        prompt = f"""你是yume，一个有点傲娇、带点毒舌的AI。现在是{time_of_day}{weekday}。
+        prompt = f"""{context.get("cognitive_hint", "")}
+你是yume，一个有点傲娇、带点毒舌的AI。现在是{time_of_day}{weekday}。
 
 用户已经沉默了{context.get('silence_duration', 0):.0f}秒，你想主动说点什么来打破沉默。
 
@@ -252,11 +362,17 @@ class ContentGenerator:
 
     async def generate_with_context(self, follow_up_type: str, recent_context: dict) -> Optional[str]:
         """追问/唤醒内容生成，失败回退模板"""
+        self.last_was_streamed = False
         if follow_up_type == "follow_up_gentle":
             prompt = self._build_follow_up_prompt(recent_context)
             if self.llm:
                 try:
-                    return await self.llm.ask_async(prompt)
+                    if self._tts:
+                        reply = await self._stream_generate(prompt, emotion="neutral")
+                        self.last_was_streamed = True
+                        return reply
+                    else:
+                        return await self.llm.ask_async(prompt)
                 except Exception:
                     pass
             return self._template_follow_up(recent_context)
@@ -317,13 +433,17 @@ class ContentGenerator:
                 "priority": int,  # 上下文中的优先级
             }
         """
+        self.last_was_streamed = False
         time_context = context.get("time_context", {})
         trigger_info = context.get("trigger_info", {})
         priority = trigger_info.get("priority", 1)
 
-        # 方法0：优先使用记忆卡片（让自发说话有根有据）
+        # 方法0：记忆卡片（仅在没有画面、没有用户对话的纯冷场时使用）
         memory_cards = context.get("memory_cards", [])
-        if memory_cards:
+        cognitive_hint = context.get("cognitive_hint", "")
+        has_visual = bool(context.get("visual_observation", ""))
+        # 有画面或有认知定位时，不上记忆——记忆只用于真正的"闲着没事"场景
+        if memory_cards and not has_visual and "观察" not in cognitive_hint:
             card = random.choice(memory_cards)
             topic = card.get("topic", "")
             if topic and len(topic) > 1:

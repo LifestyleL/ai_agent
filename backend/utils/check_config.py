@@ -101,14 +101,11 @@ def main():
     print("\n6. 检查 LLM API...")
     try:
         from core.llm.llm_api import LLMAPI
+        from core.llm.llm_factory import LLMFactory
         print("   OK: LLMAPI 导入成功")
 
         try:
-            llm = LLMAPI(
-                api_key=config.DEEPSEEK_API_KEY,
-                base_url=config.DEEPSEEK_BASE_URL,
-                model=config.DEEPSEEK_MODEL
-            )
+            llm = LLMFactory.get_default()
             print("   OK: LLMAPI 实例创建成功（单模型 DeepSeek）")
         except Exception as e:
             print(f"   ERROR: 创建 LLM 实例失败: {e}")
