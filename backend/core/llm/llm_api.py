@@ -19,7 +19,9 @@ class LLMAPI:
     def chat(self,
              messages: List[Dict[str, Any]],
              temperature: float = 0.7,
-             functions: Optional[List[Dict]] = None
+             functions: Optional[List[Dict]] = None,
+             tools: Optional[List[Dict]] = None,
+             tool_choice: str = "auto",
              ) -> Dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -30,7 +32,11 @@ class LLMAPI:
             "messages": messages,
             "temperature": temperature
         }
-        if functions:
+        if tools:
+            payload["tools"] = tools
+            if tool_choice and tool_choice != "auto":
+                payload["tool_choice"] = tool_choice
+        elif functions:
             payload["functions"] = functions
 
         try:
@@ -78,7 +84,9 @@ class LLMAPI:
     def chat_stream(self,
                     messages: List[Dict[str, Any]],
                     temperature: float = 0.7,
-                    functions: Optional[List[Dict]] = None
+                    functions: Optional[List[Dict]] = None,
+                    tools: Optional[List[Dict]] = None,
+                    tool_choice: str = "auto",
                     ):
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -90,7 +98,11 @@ class LLMAPI:
             "temperature": temperature,
             "stream": True
         }
-        if functions:
+        if tools:
+            payload["tools"] = tools
+            if tool_choice and tool_choice != "auto":
+                payload["tool_choice"] = tool_choice
+        elif functions:
             payload["functions"] = functions
 
         try:
@@ -114,17 +126,19 @@ class LLMAPI:
                                         delta = chunk['choices'][0].get('delta', {})
                                         if 'content' in delta and delta['content']:
                                             yield delta['content']
+                                        if 'tool_calls' in delta:
+                                            yield {"tool_calls": delta['tool_calls']}
                                 except json.JSONDecodeError:
                                     continue
         except httpx.TimeoutException:
-            print("❌ 流式 API 请求超时")
+            print("[ERROR] 流式 API 请求超时")
             yield "[ERROR] 请求超时"
         except httpx.HTTPStatusError as e:
-            print(f"❌ 流式 HTTP 错误: {e}")
-            yield f"[ERROR] HTTP错误: {e}"
+            print(f"[ERROR] 流式 HTTP 错误: {e}")
+            yield "[ERROR] HTTP错误: {e}"
         except Exception as e:
-            print(f"❌ 流式 API 调用失败: {e}")
-            yield f"[ERROR] {str(e)}"
+            print(f"[ERROR] 流式 API 调用失败: {e}")
+            yield "[ERROR] {str(e)}"
 
     def ask_stream(self, prompt: str, temperature: float = 0.7):
         messages = [{"role": "user", "content": prompt}]
@@ -135,7 +149,9 @@ class LLMAPI:
     async def chat_async(self,
                          messages: List[Dict[str, Any]],
                          temperature: float = 0.7,
-                         functions: Optional[List[Dict]] = None
+                         functions: Optional[List[Dict]] = None,
+                         tools: Optional[List[Dict]] = None,
+                         tool_choice: str = "auto",
                          ) -> Dict[str, Any]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -146,7 +162,11 @@ class LLMAPI:
             "messages": messages,
             "temperature": temperature
         }
-        if functions:
+        if tools:
+            payload["tools"] = tools
+            if tool_choice and tool_choice != "auto":
+                payload["tool_choice"] = tool_choice
+        elif functions:
             payload["functions"] = functions
 
         try:
@@ -194,7 +214,9 @@ class LLMAPI:
     async def chat_stream_async(self,
                                  messages: List[Dict[str, Any]],
                                  temperature: float = 0.7,
-                                 functions: Optional[List[Dict]] = None
+                                 functions: Optional[List[Dict]] = None,
+                                 tools: Optional[List[Dict]] = None,
+                                 tool_choice: str = "auto",
                                  ):
         """异步流式聊天，逐 token yield"""
         headers = {
@@ -207,7 +229,11 @@ class LLMAPI:
             "temperature": temperature,
             "stream": True
         }
-        if functions:
+        if tools:
+            payload["tools"] = tools
+            if tool_choice and tool_choice != "auto":
+                payload["tool_choice"] = tool_choice
+        elif functions:
             payload["functions"] = functions
 
         try:
@@ -231,6 +257,8 @@ class LLMAPI:
                                         delta = chunk['choices'][0].get('delta', {})
                                         if 'content' in delta and delta['content']:
                                             yield delta['content']
+                                        if 'tool_calls' in delta:
+                                            yield {"tool_calls": delta['tool_calls']}
                                 except json.JSONDecodeError:
                                     continue
         except httpx.TimeoutException:

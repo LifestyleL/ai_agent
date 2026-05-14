@@ -30,6 +30,7 @@ class AgentScheduler:
         self._speak_lock = threading.Lock()
         self._thinking = False
         self._query_threads: list = []
+        self._external_queue: asyncio.Queue = None  # 外部会话异步队列
 
     # ── 生命周期 ──
 
@@ -76,6 +77,10 @@ class AgentScheduler:
                 loop.create_task(goal_tracker.start_loop())
         except Exception:
             pass
+
+        # 外部会话队列（QQ 等不阻塞本地对话）
+        self._external_queue = asyncio.Queue()
+        self._external_worker_task = asyncio.create_task(self._process_external_queue())
 
         self._is_running = True
         logger.info("[AgentScheduler] Agent 已启动")
@@ -171,8 +176,14 @@ class AgentScheduler:
 
     # ── 用户输入 ──
 
-    def handle_user_input(self, text: str, source: str = "text") -> None:
-        """路由用户输入到状态机"""
+    def handle_user_input(self, text: str, source: str = "text", session_id: str = "") -> None:
+        """路由用户输入到状态机
+
+        Args:
+            text: 用户输入文本
+            source: 来源标识（text/voice/qq/...）
+            session_id: 外部适配器会话标识，空串=本地终端
+        """
         if not text.strip():
             return
 
@@ -201,6 +212,22 @@ class AgentScheduler:
         activity_type = memory.detect_activity_type(text)
         logger.debug("[AgentScheduler] 活动类型: %s", activity_type)
 
+        # 外部会话：若 FSM 正忙则排队，不打断本地对话
+        is_external = False
+        if session_id:
+            try:
+                registry = self._container.resolve("channel_registry")
+                ch = registry.resolve(session_id)
+                is_external = ch.is_external
+            except Exception:
+                is_external = not session_id.startswith("local_")  # fallback
+        if session_id and is_external:
+            sm: StateMachine = self._container.resolve("state_machine")
+            if sm.current_state != State.IDLE:
+                self._external_queue.put_nowait((text, source, session_id, recall_injection))
+                logger.info("[AgentScheduler] 外部消息排队 (FSM=%s): %.30s", sm.current_state.name, text)
+                return
+
         self._speak_lock.acquire()
         try:
             event_bus.publish(EventType.USER_INPUT_RECEIVED,
@@ -216,6 +243,7 @@ class AgentScheduler:
             asyncio.create_task(sm.trigger(Event.USER_INPUT, {
                 "user_input": text,
                 "recall_injection": recall_injection,
+                "session_id": session_id,
             }))
             logger.debug("[AgentScheduler] 已触发 USER_INPUT")
 
@@ -232,6 +260,41 @@ class AgentScheduler:
             event_bus.publish(EventType.USER_INPUT_PROCESSED,
                               source="AgentScheduler", text=text[:100] if text else "", timestamp=time.time())
             self._speak_lock.release()
+
+    # ── 外部会话队列处理 ──
+
+    async def _process_external_queue(self) -> None:
+        """后台循环：处理排队的外部会话消息（QQ等），等待 FSM 空闲时逐个消费"""
+        while self._is_running:
+            try:
+                text, source, session_id, recall_injection = await asyncio.wait_for(
+                    self._external_queue.get(), timeout=10.0
+                )
+            except asyncio.TimeoutError:
+                continue
+
+            # 等待 FSM 回到 IDLE
+            sm: StateMachine = self._container.resolve("state_machine")
+            while self._is_running and sm.current_state != State.IDLE:
+                await asyncio.sleep(0.5)
+
+            if not self._is_running:
+                break
+
+            logger.info("[AgentScheduler] 处理排队外部消息: session=%s", session_id)
+            # 直接触发 FSM（跳过 handle_user_input 的前处理，已在上游完成）
+            self._speak_lock.acquire()
+            try:
+                sm = self._container.resolve("state_machine")
+                asyncio.create_task(sm.trigger(Event.USER_INPUT, {
+                    "user_input": text,
+                    "recall_injection": recall_injection,
+                    "session_id": session_id,
+                }))
+            except Exception as e:
+                logger.error("[AgentScheduler] 外部消息处理异常: %s", e)
+            finally:
+                self._speak_lock.release()
 
     # ── 自驱动回调 ──
 

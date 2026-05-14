@@ -28,6 +28,7 @@ _KEY_MAP = {
     "DASHSCOPE_API_KEY": ("tts", "api_key"),
 
     # TTS
+    "TTS_ENABLED": (("tts", "enabled"), True),
     "TTS_VOICE": (("tts", "voice"), "zhixiaoxia"),
     "TTS_SPEED": (("tts", "speed"), 1.0),
     "TTS_PITCH": (("tts", "pitch"), 1.0),
@@ -73,6 +74,16 @@ _KEY_MAP = {
     "SPONTANEOUS_WINDOW_CONTINUATION": ("spontaneous", "window_continuation"),
     "SPONTANEOUS_WINDOW_EMOTIONAL": ("spontaneous", "window_emotional"),
     "SPONTANEOUS_WINDOW_GOAL": ("spontaneous", "window_goal"),
+
+    # QQ 适配器
+    "QQ_ENABLED": (("qq", "enabled"), False),
+    "QQ_WS_HOST": (("qq", "ws_host"), "0.0.0.0"),
+    "QQ_WS_PORT": (("qq", "ws_port"), 5800),
+    "QQ_WS_PATH": (("qq", "ws_path"), "/onebot"),
+    "QQ_CONTEXT_MAX_HISTORY_TURNS": (("qq", "context", "max_history_turns"), 20),
+    "QQ_CONTEXT_SHORT_TERM_CAPACITY": (("qq", "context", "short_term_capacity"), 30),
+    "QQ_TOOLS_VOICE_ENABLED": (("qq", "tools", "voice_enabled"), True),
+    "QQ_TOOLS_VISION_ENABLED": (("qq", "tools", "vision_enabled"), True),
 
     # Vision (VLM)
     "VISION_ENABLED": ("vision", "enabled"),

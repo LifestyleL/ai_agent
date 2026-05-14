@@ -372,6 +372,8 @@ def create_real_think_action(
 
         if mc:
             clean_user_input = context.get("original_user_input", user_input)
+            mc.add_short_term("user", clean_user_input)
+            mc.add_short_term("assistant", response_text)
             mc.start_async_memory_write(clean_user_input, response_text)
             if structured.get("write_request"):
                 mc.append_diary_draft(f"用户明确要求记住：{clean_user_input[:200]}")

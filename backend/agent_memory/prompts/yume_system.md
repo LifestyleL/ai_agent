@@ -9,6 +9,7 @@
   <memory>{precise_query}</memory>
   <compressed>{compressed_history}</compressed>
   <recent>{history}</recent>
+  <skills>{skill_experience}</skills>
 </context>
 
 <rules>

@@ -1,13 +1,12 @@
 """
 ThinkPipeline 编排器 + PipelineStage 抽象 + ResponseDispatcher 协议
 
-依赖方向：main(组装) → Pipeline(编排) → Stage(业务)
-Stage 之间互不知晓，Pipeline 负责编排（含自循环重入）。
+v2: ReAct 循环架构 — Setup → [LLM ↔ Tool]→ Finalize
 """
 
 import logging
 from abc import ABC, abstractmethod
-from typing import List, Protocol
+from typing import List, Optional, Protocol
 
 from backend.core.think_pipeline.context import ThinkContext
 
@@ -44,35 +43,90 @@ class PipelineStage(ABC):
 
 
 class ThinkPipeline:
-    """编排器：组合所有 Stage，处理自循环重入"""
+    """ReAct 编排器：Setup → [LLM ↔ Tool Exec] × N → Finalize"""
 
-    def __init__(self, stages: List[PipelineStage]):
-        self._stages = stages
+    def __init__(
+        self,
+        setup_stages: Optional[List[PipelineStage]] = None,
+        llm_stage: Optional[PipelineStage] = None,
+        tool_stage: Optional[PipelineStage] = None,
+        finalize_stage: Optional[PipelineStage] = None,
+        compressor=None,
+    ):
+        self._setup_stages = setup_stages or []
+        self._llm_stage = llm_stage
+        self._tool_stage = tool_stage
+        self._finalize_stage = finalize_stage
+        self._compressor = compressor
 
     async def execute(self, ctx: ThinkContext) -> ThinkContext:
-        for stage in self._stages:
+        # ── Phase A: Setup（一次性）──
+        for stage in self._setup_stages:
             ctx = await stage.process(ctx)
-            if ctx.error or ctx.needs_recall_retry:
+            if ctx.error:
+                return ctx
+
+        # ── Phase B: Build initial messages ──
+        ctx = self._build_initial_messages(ctx)
+
+        # ── Phase C: ReAct Loop ──
+        final_response_ready = False
+
+        for round_num in range(ctx.max_react_rounds):
+            ctx = ctx.replace(react_round=round_num)
+
+            ctx = await self._llm_stage.process(ctx)
+            if ctx.error:
                 break
 
-        if ctx.needs_recall_retry and ctx.recall_round < ctx.max_recall_round and not ctx.error:
-            logger.info("[Pipeline] 检测到回忆信号，启动深挖重入 (round=%s)", ctx.recall_round)
-            # 替换 user_input 为补充提示，防止 LLM 重复完整回答
-            original_question = ctx.user_input  # 此时的 user_input 还是原始问题
-            continuation_prompt = (
-                f"<system>\n"
-                f"你刚才在回答用户问题时触发了内部记忆查询，查询已完成。\n"
-                f"你之前已经回答过原始问题了，现在只需要补充你没想到的新内容。\n"
-                f"</system>\n\n"
-                f"<recall_result>\n{ctx.deep_recall_result}\n</recall_result>\n\n"
-                f"<original_question>\n{original_question}\n</original_question>\n\n"
-                f"<guidelines>\n"
-                f"  <rule>只补充你刚才没想到的新内容，不要重复已经说过的话</rule>\n"
-                f"  <rule>如果查询结果没有实质新信息，说一句自然的收尾（如'差不多就是这些啦'）</rule>\n"
-                f"  <rule>保持简短，1-2句话即可</rule>\n"
-                f"</guidelines>"
-            )
-            ctx = ctx.replace(needs_recall_retry=False, user_input=continuation_prompt)
-            ctx = await self.execute(ctx)
+            # Observation compression at step 4 (0-indexed round >= 3)
+            if round_num >= 3 and self._compressor:
+                ctx = await self._compressor.compress(ctx)
+
+            # 有 tool_calls → 执行工具 → 继续循环
+            if ctx.tool_calls:
+                ctx = await self._tool_stage.process(ctx)
+                continue
+
+            # 无 tool_calls → 最终回复 → 退出
+            final_response_ready = True
+            break
+
+        # max_react_rounds 用尽但仍有 tool_calls → 强制兜底回复
+        if not final_response_ready and not ctx.error and self._llm_stage:
+            ctx = await self._force_final_response(ctx)
+
+        # ── Phase D: Finalize ──
+        if self._finalize_stage:
+            ctx = await self._finalize_stage.process(ctx)
 
         return ctx
+
+    def _build_initial_messages(self, ctx: ThinkContext) -> ThinkContext:
+        """从 system_prompt + user_input 构建初始消息列表"""
+        messages = [{"role": "system", "content": ctx.system_prompt}]
+
+        if ctx.screenshot_b64 and ctx.screenshot_b64.startswith("data:"):
+            user_content = [
+                {"type": "text", "text": ctx.user_input},
+                {"type": "image_url", "image_url": {"url": ctx.screenshot_b64}},
+            ]
+        else:
+            user_content = ctx.user_input
+
+        messages.append({"role": "user", "content": user_content})
+        return ctx.replace(messages=messages)
+
+    async def _force_final_response(self, ctx: ThinkContext) -> ThinkContext:
+        """max_react_rounds 用尽，强制 LLM 基于已有工具结果直接回复"""
+        logger.warning("[Pipeline] max_react_rounds 用尽，兜底强制回复")
+        ctx.messages.append({
+            "role": "user",
+            "content": (
+                "你已经用完了所有工具调用轮次。现在请基于对话中已有的工具查询结果，"
+                "尽你所能直接回答用户。不要再说需要更多信息或建议调用工具。"
+                "如果确实信息不足，诚实地告诉用户你尽力了。"
+            ),
+        })
+        ctx = ctx.replace(tool_calls=[])
+        return await self._llm_stage.process(ctx)

@@ -96,7 +96,9 @@ class DIContainer:
     # ── 生命周期 ──
 
     async def initialize_all(self) -> None:
-        """按 startup_order 升序初始化所有 Capability"""
+        """按 startup_order 升序初始化所有 Capability（幂等）"""
+        if self._initialized:
+            return
         ordered = sorted(self._entries.items(), key=lambda x: x[1].startup_order)
         for name, entry in ordered:
             instance = self.resolve(name)

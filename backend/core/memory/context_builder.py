@@ -228,70 +228,144 @@ class ContextBuilder:
     # ── 时间推演查询 ──
 
     def _query_temporal(self, question: str) -> str:
-        """解析自然语言时间窗口，返回按周分组的记忆摘要"""
+        """解析自然语言时间窗口，返回按周分组的记忆摘要（含日记）"""
         from datetime import datetime, timedelta
         now = datetime.now()
         start_date = end_date = None
         label = ""
 
-        m = re.search(r'(这[周个]|本[周个])', question)
-        if m:
-            start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
-            end_date = now.strftime("%Y-%m-%d")
-            label = "最近一周"
+        # ── 具体日期解析（优先级最高） ──
+        specific_date = self._parse_specific_date(question)
+        if specific_date:
+            start_date = specific_date
+            end_date = specific_date
+            label = specific_date
 
-        m = re.search(r'(上[个]?月)', question)
-        if m:
-            first_of_this_month = now.replace(day=1)
-            last_of_prev_month = first_of_this_month - timedelta(days=1)
-            start_date = last_of_prev_month.replace(day=1).strftime("%Y-%m-%d")
-            end_date = last_of_prev_month.strftime("%Y-%m-%d")
-            label = "上个月"
+        # ── 相对时间 ──
+        if not start_date:
+            m = re.search(r'(这[周个]|本[周个])', question)
+            if m:
+                start_date = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+                end_date = now.strftime("%Y-%m-%d")
+                label = "最近一周"
 
-        m = re.search(r'最近\s*(\d+)\s*天', question)
-        if m:
-            n = int(m.group(1))
-            start_date = (now - timedelta(days=n)).strftime("%Y-%m-%d")
-            end_date = now.strftime("%Y-%m-%d")
-            label = f"最近{n}天"
+        if not start_date:
+            m = re.search(r'(上[个]?月)', question)
+            if m:
+                first_of_this_month = now.replace(day=1)
+                last_of_prev_month = first_of_this_month - timedelta(days=1)
+                start_date = last_of_prev_month.replace(day=1).strftime("%Y-%m-%d")
+                end_date = last_of_prev_month.strftime("%Y-%m-%d")
+                label = "上个月"
 
-        m = re.search(r'(\d+)\s*天前', question)
-        if m:
-            n = int(m.group(1))
-            day = (now - timedelta(days=n)).strftime("%Y-%m-%d")
-            start_date = day
-            end_date = day
-            label = f"{n}天前"
+        if not start_date:
+            m = re.search(r'最近\s*(\d+)\s*天', question)
+            if m:
+                n = int(m.group(1))
+                start_date = (now - timedelta(days=n)).strftime("%Y-%m-%d")
+                end_date = now.strftime("%Y-%m-%d")
+                label = f"最近{n}天"
+
+        if not start_date:
+            m = re.search(r'(\d+)\s*天前', question)
+            if m:
+                n = int(m.group(1))
+                day = (now - timedelta(days=n)).strftime("%Y-%m-%d")
+                start_date = day
+                end_date = day
+                label = f"{n}天前"
 
         if not start_date:
             return ""
 
+        # ── 日记查询（单日优先查日记文件） ──
+        diary_text = ""
+        if start_date == end_date:
+            diary_path = self._memory_root / "diary" / "daily" / f"{start_date}.md"
+            if diary_path.exists():
+                try:
+                    raw = diary_path.read_text(encoding="utf-8")
+                    raw = raw.replace("\r\n", "\n")
+                    # 返回摘要部分（分割线之前）
+                    for marker in ["\n\n---\n\n## 浓缩对话", "\n---\n## 浓缩对话"]:
+                        if marker in raw:
+                            raw = raw.split(marker)[0]
+                            break
+                    diary_text = raw.strip()[:800]
+                except Exception:
+                    pass
+
         cards = self._card_store.retrieve_by_date(start_date, end_date)
-        if not cards:
+
+        if not cards and not diary_text:
             return f"{label}（{start_date}~{end_date}）无记忆记录"
 
-        weeks: dict = {}
-        for c in cards:
-            ts = c.timestamp[:10] if c.timestamp else "?"
+        parts = []
+        if diary_text:
+            parts.append(f"【{label} 日记】\n{diary_text}")
+
+        if cards:
+            weeks: dict = {}
+            for c in cards:
+                ts = c.timestamp[:10] if c.timestamp else "?"
+                try:
+                    dt = datetime.fromisoformat(ts)
+                    week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
+                except Exception:
+                    week_start = ts
+                weeks.setdefault(week_start, []).append(c)
+
+            lines = [f"【{label}记忆卡片】（{start_date}~{end_date}）"]
+            for wk in sorted(weeks):
+                wk_cards = weeks[wk]
+                topics = {}
+                for c in wk_cards:
+                    t = c.topic[:30]
+                    topics[t] = topics.get(t, 0) + 1
+                top = sorted(topics.items(), key=lambda x: x[1], reverse=True)[:3]
+                topic_summary = ", ".join(f"{t}({n}张)" for t, n in top)
+                lines.append(f"  {wk} 起一周: {len(wk_cards)} 张 | {topic_summary}")
+            parts.append("\n".join(lines))
+
+        return "\n\n".join(parts)
+
+    @staticmethod
+    def _parse_specific_date(question: str) -> Optional[str]:
+        """从问题中提取具体日期，返回 YYYY-MM-DD 或 None"""
+        from datetime import datetime
+        now = datetime.now()
+
+        # 完整日期: 2026-05-09, 2026年5月9日
+        m = re.search(r'(\d{4})[年-](\d{1,2})[月-](\d{1,2})日?', question)
+        if m:
             try:
-                dt = datetime.fromisoformat(ts)
-                week_start = (dt - timedelta(days=dt.weekday())).strftime("%Y-%m-%d")
-            except Exception:
-                week_start = ts
-            weeks.setdefault(week_start, []).append(c)
+                return f"{int(m.group(1)):04d}-{int(m.group(2)):02d}-{int(m.group(3)):02d}"
+            except ValueError:
+                pass
 
-        lines = [f"【{label}记忆摘要】（{start_date}~{end_date}）"]
-        for wk in sorted(weeks):
-            wk_cards = weeks[wk]
-            topics = {}
-            for c in wk_cards:
-                t = c.topic[:30]
-                topics[t] = topics.get(t, 0) + 1
-            top = sorted(topics.items(), key=lambda x: x[1], reverse=True)[:3]
-            topic_summary = ", ".join(f"{t}({n}张)" for t, n in top)
-            lines.append(f"  {wk} 起一周: {len(wk_cards)} 张 | {topic_summary}")
+        # 月-日: 5-9号, 5/9, 5.9
+        m = re.search(r'(?<!\d)(\d{1,2})[-./](\d{1,2})号?', question)
+        if m:
+            try:
+                return f"{now.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+            except ValueError:
+                pass
 
-        return "\n".join(lines)
+        # 中文日期: 5月9日, 5月9号
+        m = re.search(r'(\d{1,2})月(\d{1,2})[日号]', question)
+        if m:
+            try:
+                return f"{now.year}-{int(m.group(1)):02d}-{int(m.group(2)):02d}"
+            except ValueError:
+                pass
+
+        # 相对日期词
+        relative = {"今天": 0, "昨天": 1, "前天": 2, "大前天": 3}
+        for word, offset in relative.items():
+            if word in question:
+                return (now - timedelta(days=offset)).strftime("%Y-%m-%d")
+
+        return None
 
     # ── 上下文组装 ──
 

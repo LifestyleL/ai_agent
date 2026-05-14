@@ -10,14 +10,40 @@ from pathlib import Path
 from typing import Any
 
 
+def _resolve_safe_path(filename: str) -> Path:
+    """将用户提供的文件名解析到 agent_memory/ 内，拒绝路径遍历"""
+    memory_root = (Path(__file__).parent.parent.parent / "agent_memory").resolve()
+
+    if os.path.isabs(filename):
+        raise ValueError(f"路径遍历拒绝(绝对路径): {filename}")
+
+    # 拒绝 .. 组件和编码遍历变体
+    parts = filename.replace('\\', '/').split('/')
+    for part in parts:
+        if part == '..' or '..%' in part or '%2e%2e' in part.lower():
+            raise ValueError(f"路径遍历拒绝: {filename}")
+
+    full = (memory_root / filename).resolve()
+    try:
+        full.relative_to(memory_root)
+    except ValueError:
+        raise ValueError(f"路径逃逸 memory_root: {filename}")
+
+    return full
+
+
 def load_files(filenames: list) -> str:
     if not filenames:
         return ""
-    memory_root = Path(__file__).parent.parent.parent / "agent_memory"
     result = []
     for name in filenames:
         name = name.strip()
-        path = memory_root / name
+        try:
+            path = _resolve_safe_path(name)
+        except ValueError as e:
+            print(f"[WARN] 加载 {name} 被拒绝: {e}")
+            result.append("")
+            continue
         if path.exists():
             try:
                 content = path.read_text(encoding="utf-8")
@@ -58,8 +84,11 @@ def _extract_diary_section(content: str) -> str:
 
 
 def append_to_file(filename: str, content: str) -> None:
-    memory_root = Path(__file__).parent.parent.parent / "agent_memory"
-    fpath = memory_root / filename
+    try:
+        fpath = _resolve_safe_path(filename)
+    except ValueError as e:
+        print(f"[WARN] 追加写入 {filename} 被拒绝: {e}")
+        return
     try:
         fpath.parent.mkdir(parents=True, exist_ok=True)
         with open(fpath, 'a', encoding='utf-8') as f:
@@ -130,8 +159,11 @@ def set_short_term_memory_cache(history: list) -> None:
 
 
 def write_file(filename: str, content: str) -> None:
-    memory_root = Path(__file__).parent.parent.parent / "agent_memory"
-    fpath = memory_root / filename
+    try:
+        fpath = _resolve_safe_path(filename)
+    except ValueError as e:
+        print(f"[WARN] 写入文件 {filename} 被拒绝: {e}")
+        return
     try:
         fpath.parent.mkdir(parents=True, exist_ok=True)
         fpath.write_text(content, encoding="utf-8")
@@ -142,8 +174,10 @@ def write_file(filename: str, content: str) -> None:
 def create_file(filename: str = "", content: str = "", overwrite: bool = False) -> str:
     if not filename:
         return "错误：缺少文件名"
-    memory_root = Path(__file__).parent.parent.parent / "agent_memory"
-    fpath = memory_root / filename
+    try:
+        fpath = _resolve_safe_path(filename)
+    except ValueError as e:
+        return f"文件创建被拒绝: {e}"
     try:
         fpath.parent.mkdir(parents=True, exist_ok=True)
         if fpath.exists() and not overwrite:

@@ -26,12 +26,35 @@ class DiaryWriter:
         try:
             draft_path.parent.mkdir(parents=True, exist_ok=True)
             today = datetime.now().strftime("%Y-%m-%d")
+            date_sep = f"--- {today} ---"
+
+            # 读取最后几行做去重判断
+            last_lines = ""
+            if draft_path.exists():
+                try:
+                    with open(draft_path, 'r', encoding='utf-8') as rf:
+                        tail = rf.read()[-300:]
+                        last_lines = tail.split("\n")[-3:]
+                except Exception:
+                    pass
+
             with open(draft_path, 'a', encoding='utf-8') as f:
                 if self._last_active_date != today:
-                    f.write(f"\n--- {today} ---\n")
+                    # 避免重复日期分隔符
+                    if last_lines and date_sep in last_lines[-1]:
+                        pass  # 分隔符已存在
+                    else:
+                        f.write(f"\n{date_sep}\n")
                     self._last_active_date = today
+
                 timestamp = datetime.now().strftime("%H:%M")
-                f.write(f"[{timestamp}] {text}\n")
+                new_line = f"[{timestamp}] {text}\n"
+
+                # 内容去重：跳过与上一条完全相同的写入
+                if last_lines and last_lines[-1].strip() == new_line.strip():
+                    return
+
+                f.write(new_line)
         except Exception as e:
             print(f"[WARN] 日记草稿写入失败: {e}")
 
@@ -42,7 +65,9 @@ class DiaryWriter:
         today = datetime.now().strftime("%Y-%m-%d")
         archived_dates: list = []
         try:
-            draft_content = draft_path.read_text(encoding="utf-8")
+            draft_content = draft_path.read_text(encoding="utf-8", errors="replace")
+            # 清理替换字符产生的连续空行
+            draft_content = re.sub(r'\n{3,}', '\n\n', draft_content)
             sections: Dict[str, list] = {}
             current_date = None
             guessed = False  # 标记是否从 mtime 推测（无 --- date --- 分隔符）
@@ -108,7 +133,9 @@ class DiaryWriter:
             return []
         archived_dates: list = []
         try:
-            draft_content = draft_path.read_text(encoding="utf-8")
+            draft_content = draft_path.read_text(encoding="utf-8", errors="replace")
+            # 清理替换字符产生的连续空行
+            draft_content = re.sub(r'\n{3,}', '\n\n', draft_content)
             sections: Dict[str, list] = {}
             current_date = None
             for line in draft_content.split("\n"):

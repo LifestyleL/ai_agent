@@ -48,10 +48,13 @@ class ShortTermMemory:
             self.short_term_history = self.short_term_history[-max_cap:]
 
         if role == "assistant" and self._pending_card_data:
-            user_text, ai_text = self._pending_card_data
+            user_text, ai_text, source = self._pending_card_data if len(self._pending_card_data) > 2 else (*self._pending_card_data, "")
             self._pending_card_data = None
             if self._card_creator:
-                self._card_creator(user_text, ai_text)
+                try:
+                    self._card_creator(user_text, ai_text, source)
+                except TypeError:
+                    self._card_creator(user_text, ai_text)  # 兼容旧签名
 
         # 非阻塞触发压缩检查
         self.maybe_compress()

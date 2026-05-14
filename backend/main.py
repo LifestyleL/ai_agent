@@ -40,6 +40,8 @@ def _build_container():
 
     c = DIContainer()
 
+    local_enabled = os.environ.get("LOCAL_AI_ENABLED", "1") != "0"
+
     # ── 基础设施（startup_order 0） ──
     c.register_instance("event_bus", event_bus)
 
@@ -55,35 +57,30 @@ def _build_container():
     c.register("emotion", lambda _: _make_emotion_engine(), startup_order=3)
     c.register("memory", lambda c_: _make_memory(c_), startup_order=4)
 
-    # ── TTS ──
-    c.register("tts", lambda _: _make_tts_service(), startup_order=5)
-    c.register("tts_manager", lambda c_: _make_tts_manager(c_), startup_order=6)
-
-    # ── 前端桥接 ──
-    c.register("frontend", lambda _: _make_frontend(), startup_order=7)
-    c.register("response_dispatcher", lambda c_: _make_dispatcher(c_), startup_order=8)
-
-    # ── 工具 & 技能 ──
+    # ── 工具 & 技能（共享）──
     c.register("tool_registry", lambda _: _build_tool_registry(), startup_order=9)
+    c.register("skill_manager", lambda c_: _build_skill_manager(c_), startup_order=9)
 
-    # ── 行为模型 ──
-    c.register("drive_model", lambda _: _make_drive_model(), startup_order=10)
-    c.register("instinct_handler", lambda c_: _make_instinct_handler(c_), startup_order=11)
-    c.register("mumble_handler", lambda c_: _make_mumble_handler(c_), startup_order=11)
+    # ── Channel 抽象（共享）──
+    c.register("channel_registry", lambda c_: _make_channel_registry(c_), startup_order=9)
 
-    # ── 自驱动 ──
-    c.register("goal_tracker", lambda c_: _make_goal_tracker(c_), startup_order=12)
-    c.register("spontaneous_engine", lambda c_: _make_spontaneous_engine(c_), startup_order=12)
-    c.register("visual_observer", lambda c_: _make_visual_observer(c_), startup_order=12)
-
-    # ── 调度核心 ──
-    c.register("state_machine", lambda _: _make_state_machine(), startup_order=13)
-    c.register("think_orchestrator", lambda c_: _make_orchestrator(c_), startup_order=14)
-    c.register("agent_scheduler", lambda c_: _make_scheduler(c_), startup_order=15)
-
-    # ── IO ──
-    c.register("asr", lambda _: _make_asr(), startup_order=16)
-    c.register("ws_server", lambda c_: _make_ws_server(c_), startup_order=17)
+    # ── 本地 AI 组件 ──
+    if local_enabled:
+        c.register("tts", lambda _: _make_tts_service(), startup_order=5)
+        c.register("tts_manager", lambda c_: _make_tts_manager(c_), startup_order=6)
+        c.register("frontend", lambda _: _make_frontend(), startup_order=7)
+        c.register("response_dispatcher", lambda c_: _make_dispatcher(c_), startup_order=8)
+        c.register("drive_model", lambda _: _make_drive_model(), startup_order=10)
+        c.register("instinct_handler", lambda c_: _make_instinct_handler(c_), startup_order=11)
+        c.register("mumble_handler", lambda c_: _make_mumble_handler(c_), startup_order=11)
+        c.register("goal_tracker", lambda c_: _make_goal_tracker(c_), startup_order=12)
+        c.register("spontaneous_engine", lambda c_: _make_spontaneous_engine(c_), startup_order=12)
+        c.register("visual_observer", lambda c_: _make_visual_observer(c_), startup_order=12)
+        c.register("state_machine", lambda _: _make_state_machine(), startup_order=13)
+        c.register("think_orchestrator", lambda c_: _make_orchestrator(c_), startup_order=14)
+        c.register("agent_scheduler", lambda c_: _make_scheduler(c_), startup_order=15)
+        c.register("asr", lambda _: _make_asr(), startup_order=16)
+        c.register("ws_server", lambda c_: _make_ws_server(c_), startup_order=17)
 
     return c
 
@@ -166,6 +163,49 @@ def _build_tool_registry():
     reg.register(ReadFileAdapter())
     reg.register(SummarizeArchiveAdapter())
     reg.register(WriteDiaryAdapter())
+    return reg
+
+
+def _build_skill_manager(c):
+    """构建 SkillManager，加载 backend/skills/ 下所有 .md 技能包"""
+    from backend.core.skill.skill_manager import SkillManager
+    mgr = SkillManager(
+        llm=c.resolve("llm"),
+        tool_registry=c.resolve("tool_registry"),
+    )
+    count = mgr.load_all()
+    print(f"[SkillManager] 已加载 {count} 个技能")
+    return mgr
+
+
+def _make_channel_registry(c):
+    """构建 ChannelRegistry，注册 LocalChannel（QQChannel 由 run_qq.py 添加）"""
+    from backend.core.channel.base import Channel
+    from backend.core.channel.local_channel import LocalChannel
+
+    # 简易注册表，不引入额外类
+    class ChannelRegistry:
+        def __init__(self):
+            self._channels: dict = {}
+
+        def register(self, ch: Channel):
+            self._channels[ch.name] = ch
+
+        def resolve(self, session_id: str) -> Channel:
+            for ch in self._channels.values():
+                if ch.name == "local":
+                    continue  # local is default, not matched by session_id
+                if session_id and session_id.startswith(f"{ch.name}_"):
+                    return ch
+            return self._channels.get("local")
+
+    reg = ChannelRegistry()
+    # LocalChannel 始终注册（兜底）
+    reg.register(LocalChannel(
+        dispatcher=c.resolve("response_dispatcher") if c.contains("response_dispatcher") else None,
+        frontend=c.resolve("frontend") if c.contains("frontend") else None,
+        tts_manager=c.resolve("tts_manager") if c.contains("tts_manager") else None,
+    ))
     return reg
 
 
@@ -252,60 +292,72 @@ async def _start_new_architecture():
     validate_config()
 
     container = _build_container()
-    print(f"[Main] DI 容器已创建，注册 {len(container.list_names())} 个能力")
+    local_enabled = os.environ.get("LOCAL_AI_ENABLED", "1") != "0"
+    print(f"[Main] DI 容器已创建，注册 {len(container.list_names())} 个能力 (本地AI={'on' if local_enabled else 'off'})")
 
-    scheduler = container.resolve("agent_scheduler")
-    await scheduler.start()
+    # 初始化所有注册的 Capability
+    await container.initialize_all()
 
-    # 连接 send_queue
-    ws_server = container.resolve("ws_server")
-    frontend = container.resolve("frontend")
-    tts_manager = container.resolve("tts_manager")
-    frontend.send_queue = ws_server.send_queue
-    if hasattr(tts_manager, 'voice'):
-        tts_manager.voice.send_queue = ws_server.send_queue
+    scheduler = None
+    ws_server = None
+    server = None
 
-    # 启动 WebSocket
-    try:
-        server = await ws_server.start_server()
-        print(f"\n[OK] 系统就绪！前端连接 ws://localhost:{WS_PORT} | 终端直接打字对话\n")
-    except Exception as e:
-        print(f"[ERROR] WebSocket 启动失败: {e}")
-        sys.exit(1)
+    if local_enabled:
+        scheduler = container.resolve("agent_scheduler")
+        await scheduler.start()
 
-    # 终端输入线程
+        # 连接 send_queue
+        ws_server = container.resolve("ws_server")
+        frontend = container.resolve("frontend")
+        tts_manager = container.resolve("tts_manager")
+        frontend.send_queue = ws_server.send_queue
+        if hasattr(tts_manager, 'voice'):
+            tts_manager.voice.send_queue = ws_server.send_queue
+
+        # 启动 WebSocket
+        try:
+            server = await ws_server.start_server()
+            print(f"\n[OK] 系统就绪！前端连接 ws://localhost:{WS_PORT} | 终端直接打字对话\n")
+        except Exception as e:
+            print(f"[ERROR] WebSocket 启动失败: {e}")
+            sys.exit(1)
+
+    # 终端输入线程（仅本地 AI 模式）
     loop = asyncio.get_running_loop()
     stdin_stop = threading.Event()
 
-    def stdin_loop():
-        print()
-        print("[CHAT] ================================")
-        print("[CHAT]   在这里直接打字按回车即可对话")
-        print("[CHAT] ================================")
-        print()
-        while not stdin_stop.is_set():
-            try:
-                text = input("user：")
-                if text.strip() == "/trigger":
-                    se = container.resolve("spontaneous_engine")
-                    if se:
-                        asyncio.run_coroutine_threadsafe(se.manual_trigger_async(), loop)
-                        print("[TEST] 已调度手动自驱动触发")
-                    continue
-                if text.strip() == "/spstatus":
-                    se = container.resolve("spontaneous_engine")
-                    if se:
-                        status = se.get_status()
-                        print(f"[自驱动] 运行中: {status.get('is_running')}, 沉默: {status.get('silence_duration', 0)/60:.1f}min")
-                    continue
-                if text.strip():
-                    scheduler.handle_user_input(text.strip())
-            except EOFError:
-                break
-            except Exception as e:
-                print(f"[ERROR] 输入异常: {e}")
+    if local_enabled:
+        def stdin_loop():
+            print()
+            print("[CHAT] ================================")
+            print("[CHAT]   在这里直接打字按回车即可对话")
+            print("[CHAT] ================================")
+            print()
+            while not stdin_stop.is_set():
+                try:
+                    text = input("user：")
+                    if text.strip() == "/trigger":
+                        se = container.resolve("spontaneous_engine")
+                        if se:
+                            asyncio.run_coroutine_threadsafe(se.manual_trigger_async(), loop)
+                            print("[TEST] 已调度手动自驱动触发")
+                        continue
+                    if text.strip() == "/spstatus":
+                        se = container.resolve("spontaneous_engine")
+                        if se:
+                            status = se.get_status()
+                            print(f"[自驱动] 运行中: {status.get('is_running')}, 沉默: {status.get('silence_duration', 0)/60:.1f}min")
+                        continue
+                    if text.strip():
+                        scheduler.handle_user_input(text.strip())
+                except EOFError:
+                    break
+                except Exception as e:
+                    print(f"[ERROR] 输入异常: {e}")
 
-    threading.Thread(target=stdin_loop, daemon=True).start()
+        threading.Thread(target=stdin_loop, daemon=True).start()
+    else:
+        print("\n[OK] 系统就绪（无本地 AI，仅基础设施运行）\n")
 
     # 信号处理
     shutdown_event = asyncio.Event()
@@ -327,18 +379,23 @@ async def _start_new_architecture():
     await shutdown_event.wait()
 
     # 优雅关闭
-    print("[STOP] 正在关闭 WebSocket 服务...")
-    try:
-        server.close()
-        await asyncio.wait_for(server.wait_closed(), timeout=3)
-    except Exception as e:
-        print(f"[STOP] WebSocket 关闭: {e}")
+    if server:
+        print("[STOP] 正在关闭 WebSocket 服务...")
+        try:
+            server.close()
+            await asyncio.wait_for(server.wait_closed(), timeout=3)
+        except Exception as e:
+            print(f"[STOP] WebSocket 关闭: {e}")
 
     print("[STOP] 正在停止终端输入...")
     stdin_stop.set()
 
-    print("[STOP] 正在停止 Agent...")
-    await scheduler.shutdown()
+    # 统一通过容器 shutdown（含 QQ AI 等所有 Capability）
+    print("[STOP] 正在停止所有能力...")
+    try:
+        await container.shutdown_all()
+    except Exception as e:
+        print(f"[STOP] 能力关闭异常: {e}")
 
     print("[OK] 系统已关闭")
     os._exit(0)

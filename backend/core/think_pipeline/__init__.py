@@ -1,7 +1,7 @@
 """
-think_pipeline: action_think 的 Pipeline 替代品
+think_pipeline: ReAct 循环架构（v2）
 
-将原 228 行 God Function 拆分为 5 个独立 Stage，每个可独立测试。
+Setup → [LLM ↔ Tool Exec] × N → Finalize
 """
 
 from backend.core.think_pipeline.context import ThinkContext
@@ -13,12 +13,15 @@ from backend.core.think_pipeline.pipeline import (
 from backend.core.think_pipeline.dispatchers import DefaultResponseDispatcher
 from backend.core.think_pipeline.memory_retrieve import MemoryRetrieveStage
 from backend.core.think_pipeline.prompt_build import PromptBuildStage
+from backend.core.think_pipeline.llm_chat_stage import LLMChatStage
+from backend.core.think_pipeline.tool_exec_stage import ToolExecStage
+from backend.core.think_pipeline.finalize import FinalizeStage
+from backend.core.think_pipeline.observation_compress import ObservationCompressor
+from backend.core.think_pipeline.skill_match_stage import SkillMatchStage
+
+# 旧版兼容（仍被部分代码引用）
 from backend.core.think_pipeline.llm_stream import LLMStreamStage
 from backend.core.think_pipeline.recall_detect import RecallDetectStage, QueryExecutor
-from backend.core.think_pipeline.finalize import FinalizeStage
-from backend.core.think_pipeline.skill_match_stage import (
-    SkillMatchStage, SkillMatcher, SkillInfo, build_default_matcher,
-)
 
 __all__ = [
     "ThinkContext",
@@ -28,12 +31,13 @@ __all__ = [
     "DefaultResponseDispatcher",
     "MemoryRetrieveStage",
     "SkillMatchStage",
-    "SkillMatcher",
-    "SkillInfo",
-    "build_default_matcher",
     "PromptBuildStage",
+    "LLMChatStage",
+    "ToolExecStage",
+    "FinalizeStage",
+    "ObservationCompressor",
+    # 旧版兼容
     "LLMStreamStage",
     "RecallDetectStage",
     "QueryExecutor",
-    "FinalizeStage",
 ]

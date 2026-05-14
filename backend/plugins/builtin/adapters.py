@@ -8,6 +8,17 @@ class ReadFileAdapter(BaseTool):
 
     name = "read_file"
     description = "读文件内容（替代 load_memory）。"
+    inputSchema = {
+        "type": "object",
+        "properties": {
+            "filenames": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "要读取的文件名列表"
+            }
+        },
+        "required": ["filenames"]
+    }
 
     def __init__(self):
         pass
@@ -33,6 +44,20 @@ class WriteFileAdapter(BaseTool):
 
     name = "write_file"
     description = "写内容到文件。"
+    inputSchema = {
+        "type": "object",
+        "properties": {
+            "filename": {
+                "type": "string",
+                "description": "文件名（相对于 memory_root）"
+            },
+            "content": {
+                "type": "string",
+                "description": "要写入的内容"
+            }
+        },
+        "required": ["filename", "content"]
+    }
 
     def __init__(self):
         pass
@@ -51,6 +76,16 @@ class SearchMemoryAdapter(BaseTool):
 
     name = "search_memory"
     description = "搜索记忆。有日期则精准溯源，无日期则语义搜索。"
+    inputSchema = {
+        "type": "object",
+        "properties": {
+            "keyword": {
+                "type": "string",
+                "description": "搜索关键词"
+            }
+        },
+        "required": ["keyword"]
+    }
 
     def __init__(self):
         pass
@@ -71,6 +106,15 @@ class SummarizeArchiveAdapter(BaseTool):
 
     name = "summarize_and_archive"
     description = "记忆满载归档（替代 update_long_term_memory）。"
+    inputSchema = {
+        "type": "object",
+        "properties": {
+            "max_lines": {
+                "type": "integer",
+                "description": "最大行数限制"
+            }
+        }
+    }
 
     def __init__(self):
         pass
@@ -89,6 +133,15 @@ class WriteDiaryAdapter(BaseTool):
 
     name = "write_diary"
     description = "写日记（有日期写该日，无日期自动检测）。"
+    inputSchema = {
+        "type": "object",
+        "properties": {
+            "target_date": {
+                "type": "string",
+                "description": "目标日期，格式 YYYY-MM-DD"
+            }
+        }
+    }
 
     def __init__(self):
         pass

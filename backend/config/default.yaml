@@ -11,11 +11,12 @@ websocket:
 
 ai:
   deepseek:
-    model: "deepseek-chat"
+    model: "deepseek-v4-flash"
     temperature: 0.3
     max_tokens: 4096
 
 tts:
+  enabled: true                   # 全局 TTS 开关
   provider: "dashscope"
   voice: "zhixiaoxia"
   speed: 1.0
@@ -130,6 +131,19 @@ vision:
   base_interval: 180                                   # 活跃期截图间隔（秒）
   silence_boost_interval: 60                           # 沉默期截图间隔（秒）
   cooldown_seconds: 30                                 # VLM 调用后冷却（秒）
+
+# QQ 适配器配置
+qq:
+  enabled: false
+  ws_port: 5800
+  ws_path: "/onebot"
+  ws_host: "0.0.0.0"
+  context:
+    max_history_turns: 20
+    short_term_capacity: 30
+  tools:
+    voice_enabled: true
+    vision_enabled: true
 
 # 情绪引擎配置
 emotion:

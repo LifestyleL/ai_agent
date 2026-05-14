@@ -49,17 +49,17 @@ class CardManager:
 
     # ── 卡片创建 ──
 
-    def _async_create_card(self, user_text: str, ai_text: str):
+    def _async_create_card(self, user_text: str, ai_text: str, source: str = ""):
         t = threading.Thread(
             target=self._create_card_sync,
-            args=(user_text, ai_text),
+            args=(user_text, ai_text, source),
             daemon=True,
         )
         t.start()
         self._write_threads.append(t)
         self._write_threads = [t for t in self._write_threads if t.is_alive()]
 
-    def _create_card_sync(self, user_text: str, ai_text: str):
+    def _create_card_sync(self, user_text: str, ai_text: str, source: str = ""):
         try:
             if not self._llm_api:
                 return
@@ -103,6 +103,10 @@ class CardManager:
             content = card_data.get("content", "")
             emotion = card_data.get("emotion", "neutral")
             topic = card_data.get("topic", "")
+
+            # 来源标识注入（QQ 聊天自动加 qq_chat 标签）
+            if source and source.startswith("qq") and "qq_chat" not in tags:
+                tags.append("qq_chat")
 
             emotion_eng = self._emotion_engine.get_emotion_dict() if self._emotion_engine else {}
             importance = score_importance(
@@ -171,24 +175,30 @@ class CardManager:
 
     # ── 异步记忆写入 ──
 
-    def start_async_memory_write(self, user_text: str, ai_reply_text: str):
+    def start_async_memory_write(self, user_text: str, ai_reply_text: str, source: str = ""):
         def task():
             try:
-                self._sync_memory_write(user_text, ai_reply_text)
+                self._sync_memory_write(user_text, ai_reply_text, source)
             except Exception as e:
                 print(f"[Memory] 异步记忆写入失败: {e}")
         t = threading.Thread(target=task, daemon=False)
         t.start()
         self._write_threads.append(t)
 
-    def _sync_memory_write(self, user_text: str, ai_reply_text: str):
+    def _sync_memory_write(self, user_text: str, ai_reply_text: str, source: str = ""):
         try:
-            if self._diary_writer:
-                self._diary_writer.append_diary_draft(f"用户：{user_text[:200]}")
-                self._diary_writer.append_diary_draft(f"我：{ai_reply_text[:200]}")
+            if source and source.startswith("qq"):
+                if self._diary_writer:
+                    self._diary_writer.append_diary_draft(f"[QQ] 用户：{user_text[:200]}")
+                    self._diary_writer.append_diary_draft(f"[QQ] 我：{ai_reply_text[:200]}")
+            else:
+                if self._diary_writer:
+                    self._diary_writer.append_diary_draft(f"用户：{user_text[:200]}")
+                    self._diary_writer.append_diary_draft(f"我：{ai_reply_text[:200]}")
 
-            if self._short_term:
-                self._short_term._pending_card_data = (user_text, ai_reply_text)
+            # 短期记忆已在主线程同步写入，这里只触发异步卡片创建
+            if self._short_term and self._short_term._card_creator:
+                self._short_term._card_creator(user_text, ai_reply_text, source)
 
             real_emotion = self._emotion_engine.get_emotion_dict() if self._emotion_engine else {}
             tag_result = {
@@ -196,10 +206,6 @@ class CardManager:
                 "emotion_strength": real_emotion.get("strength", 1),
                 "scene_type": real_emotion.get("scene", "A")
             }
-
-            if self._short_term:
-                self._short_term.add_short_term("user", user_text)
-                self._short_term.add_short_term("assistant", ai_reply_text)
 
             print(f"[Memory] 记忆写入完成 (情绪: {tag_result['emotion_type']})")
 

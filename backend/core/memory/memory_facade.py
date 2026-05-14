@@ -258,8 +258,8 @@ class MemoryFacade:
 
     # ── 卡片创建 ──
 
-    def start_async_memory_write(self, user_text: str, ai_reply_text: str):
-        self._card_manager.start_async_memory_write(user_text, ai_reply_text)
+    def start_async_memory_write(self, user_text: str, ai_reply_text: str, source: str = ""):
+        self._card_manager.start_async_memory_write(user_text, ai_reply_text, source)
 
     # ── 卡片审核 ──
 

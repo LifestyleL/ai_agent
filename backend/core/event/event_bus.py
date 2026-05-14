@@ -70,6 +70,9 @@ class EventType(Enum):
     TTS_INTERRUPTED = "tts_interrupted"                  # TTS 播报被打断
     ASR_RESULT = "asr_result"                            # ASR 识别到最终结果
 
+    # 外部适配器事件（QQ / Telegram 等）
+    RESPONSE_READY = "response_ready"                    # AI 回复就绪，携带 response_text + session_id
+
 
 # ==================== 事件数据结构 ====================
 
