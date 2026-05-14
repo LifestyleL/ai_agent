@@ -43,6 +43,8 @@ def _init_deps():
     from backend.plugins.registry import ToolRegistry
     from backend.plugins.builtin.adapters import (
         SearchMemoryAdapter, ReadFileAdapter, WriteDiaryAdapter,
+        ListDirectoryAdapter, GrepSearchAdapter, WebSearchAdapter,
+        RecognizeImageAdapter,
     )
     from backend.core.skill.skill_manager import SkillManager
     from backend.core.channel.qq_channel import QQChannel
@@ -60,11 +62,19 @@ def _init_deps():
     qq_short_term = ShortTermMemory(card_store=memory._card_store)
     emotion = EmotionEngine()
 
-    # 工具注册（QQ 白名单：只读+日记，不允许 write_file）
-    registry = ToolRegistry(allowlist={"search_memory", "read_file", "write_diary"})
+    # 工具注册（QQ 白名单：只读+日记+文件探索+图片识别）
+    registry = ToolRegistry(allowlist={
+        "search_memory", "read_file", "write_diary",
+        "list_directory", "grep_search", "web_search",
+        "recognize_image",
+    })
     registry.register(SearchMemoryAdapter())
     registry.register(ReadFileAdapter())
     registry.register(WriteDiaryAdapter())
+    registry.register(ListDirectoryAdapter())
+    registry.register(GrepSearchAdapter())
+    registry.register(WebSearchAdapter())
+    registry.register(RecognizeImageAdapter())
 
     # 技能管理器
     skill_manager = SkillManager(llm=llm, tool_registry=registry)
@@ -129,6 +139,36 @@ def _build_onebot_response(data: dict, text: str) -> dict:
     return {"action": "send_msg", "params": params}
 
 
+def _download_qq_image(url: str, memory) -> str:
+    """下载 QQ 图片到 agent_memory/temp/，返回相对路径（相对于 agent_memory）"""
+    import hashlib
+    import time
+    import urllib.request
+
+    temp_dir = memory._memory_root / "temp"
+    temp_dir.mkdir(parents=True, exist_ok=True)
+
+    # 用 URL hash + 时间戳生成文件名
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:12]
+    timestamp = int(time.time() * 1000)
+    ext = ".jpg"
+    filename = f"qq_img_{url_hash}_{timestamp}{ext}"
+    filepath = temp_dir / filename
+
+    try:
+        req = urllib.request.Request(url, headers={
+            "User-Agent": "Mozilla/5.0",
+            "Referer": "https://q.qq.com/",
+        })
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            filepath.write_bytes(resp.read())
+        logging.info("[QQ] Image downloaded: %s (%d bytes)", filename, filepath.stat().st_size)
+        return f"temp/{filename}"
+    except Exception as e:
+        logging.warning("[QQ] Image download failed: %s — %s", url[:80], e)
+        return ""
+
+
 async def _ws_handler(request):
     ws = web.WebSocketResponse()
     await ws.prepare(request)
@@ -151,6 +191,31 @@ async def _ws_handler(request):
             continue
 
         raw_text = data.get("raw_message", "")
+
+        # ── 图片检测：解析 message 数组中的图片，下载保存 ──
+        image_paths = []
+        message_array = data.get("message", [])
+        if message_array and isinstance(message_array, list):
+            for seg in message_array:
+                if seg.get("type") == "image":
+                    img_data = seg.get("data", {})
+                    img_url = img_data.get("url", "")
+                    if img_url:
+                        saved = _download_qq_image(img_url, memory)
+                        if saved:
+                            image_paths.append(saved)
+
+        if not raw_text and image_paths:
+            raw_text = "[图片]"
+        if image_paths:
+            img_hints = "\n".join(f"- {p}" for p in image_paths)
+            raw_text = (
+                f"{raw_text}\n\n"
+                f"[系统：用户发送了 {len(image_paths)} 张图片，已保存到以下路径。"
+                f"如需查看图片内容，请使用 recognize_image 工具：]\n"
+                f"{img_hints}"
+            )
+
         if not raw_text or not raw_text.strip():
             continue
 
